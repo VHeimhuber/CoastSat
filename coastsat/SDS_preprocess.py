@@ -504,38 +504,39 @@ def create_jpg(im_ms, cloud_mask, date, satname, filepath):
 
     # rescale image intensity for display purposes
     im_RGB = rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)
-#    im_NIR = rescale_image_intensity(im_ms[:,:,3], cloud_mask, 99.9)
-#    im_SWIR = rescale_image_intensity(im_ms[:,:,4], cloud_mask, 99.9)
+    im_NIR = rescale_image_intensity(im_ms[:,:,3], cloud_mask, 99.9)
+    im_SWIR = rescale_image_intensity(im_ms[:,:,4], cloud_mask, 99.9)
     
     # make figure (just RGB)
     fig = plt.figure()
     fig.set_size_inches([18,9])
     fig.set_tight_layout(True)
-    ax1 = fig.add_subplot(111)
-    ax1.axis('off')
-    ax1.imshow(im_RGB)
-    ax1.set_title(date + '   ' + satname, fontsize=16)
-    
-#    if im_RGB.shape[1] > 2*im_RGB.shape[0]:
-#        ax1 = fig.add_subplot(311)
-#        ax2 = fig.add_subplot(312)
-#        ax3 = fig.add_subplot(313)
-#    else:
-#        ax1 = fig.add_subplot(131)
-#        ax2 = fig.add_subplot(132)
-#        ax3 = fig.add_subplot(133)        
-#    # RGB
+#    ax1 = fig.add_subplot(111)
 #    ax1.axis('off')
 #    ax1.imshow(im_RGB)
 #    ax1.set_title(date + '   ' + satname, fontsize=16)
-#    # NIR
-#    ax2.axis('off')
-#    ax2.imshow(im_NIR, cmap='seismic')
-#    ax2.set_title('Near Infrared', fontsize=16)
-#    # SWIR
-#    ax3.axis('off')
-#    ax3.imshow(im_SWIR, cmap='seismic')
-#    ax3.set_title('Short-wave Infrared', fontsize=16)
+    
+    if im_RGB.shape[1] > 2*im_RGB.shape[0]:
+        ax1 = fig.add_subplot(311)
+        ax2 = fig.add_subplot(312)
+        ax3 = fig.add_subplot(313)
+    else:
+        ax1 = fig.add_subplot(131)
+        ax2 = fig.add_subplot(132)
+        ax3 = fig.add_subplot(133)        
+    
+    # RGB
+    ax1.axis('off')
+    ax1.imshow(im_RGB)
+    ax1.set_title(date + '   ' + satname, fontsize=16)
+    # NIR
+    ax2.axis('off')
+    ax2.imshow(im_NIR, cmap='seismic')
+    ax2.set_title('Near Infrared', fontsize=16)
+    # SWIR
+    ax3.axis('off')
+    ax3.imshow(im_SWIR, cmap='seismic')
+    ax3.set_title('Short-wave Infrared', fontsize=16)
     
     # save figure
     plt.rcParams['savefig.jpeg_quality'] = 100
