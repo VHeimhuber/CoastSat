@@ -14,7 +14,10 @@ from osgeo import gdal, osr
 import geopandas as gpd
 from shapely import geometry
 import skimage.transform as transform
+from skimage import draw
+import skimage.filters as filters
 from scipy.ndimage.filters import uniform_filter
+import fiona
 
 ###################################################################################################
 # COORDINATES CONVERSION FUNCTIONS
@@ -514,3 +517,134 @@ def transects_to_gdf(transects):
             gdf_all = gdf_all.append(gdf)
             
     return gdf_all
+
+def polygon2mask(image_shape, polygon):
+    """Compute a mask from polygon.
+    from github since it wasn't included in the coastsat version of scikit yet
+    Parameters
+    ----------
+    image_shape : tuple of size 2.
+        The shape of the mask.
+    polygon : array_like.
+        The polygon coordinates of shape (N, 2) where N is
+        the number of points.
+    Returns
+    -------
+    mask : 2-D ndarray of type 'bool'.
+        The mask that corresponds to the input polygon.
+    Notes
+    -----
+    This function does not do any border checking, so that all
+    the vertices need to be within the given shape.
+    Examples
+    --------
+    >>> image_shape = (128, 128)
+    >>> polygon = np.array([[60, 100], [100, 40], [40, 40]])
+    >>> mask = polygon2mask(image_shape, polygon)
+    >>> mask.shape
+    (128, 128)
+    """
+    polygon = np.asarray(polygon)
+    vertex_row_coords, vertex_col_coords = polygon.T
+    fill_row_coords, fill_col_coords = draw.polygon(
+        vertex_row_coords, vertex_col_coords, image_shape)
+    mask = np.zeros(image_shape, dtype=int)
+    mask[fill_row_coords, fill_col_coords] = 9999
+    return mask
+
+def maskimage_frompolygon(image, polygonndarray):
+    """
+    function that uses an nparray image and an nparray polygon as input and 
+    returns a copy of the image with the pixels outside the polygon masked as np.NAN
+    mask an nparray image with 1 dimension based on a polygon in nparray format
+    """
+    image_shape = (image.shape)
+    #swap x and y coordinates
+    polygonndarray_conv = np.copy(polygonndarray).astype(int)
+    polygonndarray_conv[:,[0, 1]] = polygonndarray[:,[1, 0]]
+    mask = polygon2mask(image_shape, polygonndarray_conv) #create a mask where valid values inside the polygon are 9999
+    image_masked = np.copy(image)
+    image_masked[mask != 9999] = np.NAN
+    return image_masked
+
+
+#generate bounding box in pixel coordinates
+def get_bounding_box_minmax(polygonndarray):
+    Xmin = np.min(polygonndarray.astype(int)[:,0])
+    Xmax = np.max(polygonndarray.astype(int)[:,0])
+    Ymin = np.min(polygonndarray.astype(int)[:,1])
+    Ymax = np.max(polygonndarray.astype(int)[:,1])
+    return Xmin,Xmax, Ymin,Ymax
+
+
+
+def load_shapes_as_ndarrays(fn, satname, sitename, shapefile_EPSG,  georef, metadata):
+    
+    #seed point for region growing
+    shp_seed = os.path.join(os.getcwd(), 'Sites', sitename + '_ocean_seed.shp')    
+    with fiona.open(shp_seed, "r") as shapefile:
+        features = [feature["geometry"] for feature in shapefile]
+    [x0, y0] = features[0]['coordinates'][0],features[0]['coordinates'][1]
+    [x1, y1] = features[1]['coordinates'][0],features[1]['coordinates'][1]
+    seedpoint_array = np.array([[x0, y0], [x1, y1]])
+    
+    #convert input spatial layers to image coordinates
+    #if lat lon use 4326 (WGS 84)
+    image_epsg = metadata[satname]['epsg'][1]
+    seedpoint_array = convert_epsg(seedpoint_array, shapefile_EPSG, image_epsg)
+    seedpoint_array = convert_world2pix(seedpoint_array[:,:-1], georef)
+     
+    #ICOLL entrance area bounding box for limiting spectral variability of scene
+    shp_entrance_bbx = os.path.join(os.getcwd(), 'Sites', sitename + '_entrance_bounding_box.shp')    
+    with fiona.open(shp_entrance_bbx, "r") as shapefile:
+        entrance_bbx = [feature["geometry"] for feature in shapefile]  
+    entrance_bbx = [[list(elem) for elem in entrance_bbx[0]['coordinates'][0]]]
+    entrance_bbx_conv = convert_epsg(entrance_bbx, shapefile_EPSG, image_epsg)
+    entrance_bbx_pix = convert_world2pix(entrance_bbx_conv[0][:,:-1], georef)
+    
+    #ICOLL entrance area that's clearly within the lagoon - it's used as a receiving area for the region grower
+    shp_entrance_receiver = os.path.join(os.getcwd(), 'Sites', sitename + '_entrance_area.shp')    
+    with fiona.open(shp_entrance_receiver, "r") as shapefile:
+        entrance_receiver = [feature["geometry"] for feature in shapefile] 
+    entrance_rec = [[list(elem) for elem in entrance_receiver[0]['coordinates'][0]]]
+    entrance_rec_conv = convert_epsg(entrance_rec, shapefile_EPSG, image_epsg)
+    entrance_rec_pix = convert_world2pix(entrance_rec_conv [0][:,:-1], georef) 
+    
+    #ICOLL entrance area bounding box for limiting spectral variability of scene
+    shp_estuary = os.path.join(os.getcwd(), 'Sites', sitename + '_estuary_area.shp')    
+    with fiona.open(shp_estuary, "r") as shapefile:
+        shp_estuary = [feature["geometry"] for feature in shapefile]  
+    estuary = [[list(elem) for elem in shp_estuary[0]['coordinates'][0]]]
+    estuary = convert_epsg(estuary, shapefile_EPSG, image_epsg)
+    estuary = convert_world2pix(estuary[0][:,:-1], georef)
+    
+    return seedpoint_array , entrance_bbx_pix, entrance_rec_pix, estuary
+
+
+def classify_binary_otsu(im_1d, cloud_mask):
+    """
+    classify a greyscale image using otsu thresholding
+    returns classified image where 0 = water, 1 = dryland
+    """
+    vec_ndwi = im_1d.reshape(im_1d.shape[0] * im_1d.shape[1])
+    vec_mask = cloud_mask.reshape(cloud_mask.shape[0] * cloud_mask.shape[1])
+    vec = vec_ndwi[~vec_mask]
+    # apply otsu's threshold
+    vec = vec[~np.isnan(vec)]
+    t_otsu = filters.threshold_otsu(vec)
+    # compute classified image
+    im_class = np.copy(im_1d)
+    im_class[im_1d < t_otsu] = 0
+    im_class[im_1d >= t_otsu] = 1
+    im_class[im_1d ==np.NAN] = np.NAN
+    return im_class, t_otsu
+
+
+
+
+
+
+
+
+
+
