@@ -6,7 +6,7 @@
 
 #%% 1. Initial settings
 
-# load modules
+#load modules
 import os
 import numpy as np
 import pickle
@@ -21,6 +21,7 @@ from osgeo import gdal, gdalconst
 from sklearn.externals import joblib
 import matplotlib.cm as cm
 from skimage.segmentation import flood, flood_fill
+import csv
 
 # name of the site
 sitename = 'CATHIE'
@@ -132,7 +133,7 @@ satname =  'L5'
 # get images
 filepath = SDS_tools.get_filepath(settings['inputs'],satname)
 filenames = metadata[satname]['filenames']
-filenames = filenames[46:52]                                                 #####!!!!!##### Intermediate
+#filenames = filenames[46:52]                                                 #####!!!!!##### Intermediate
 
 # load classifiers and
 if satname in ['L5','L7','L8']:
@@ -155,11 +156,16 @@ min_beach_area_pixels = np.ceil(settings['min_beach_area']/pixel_size**2)
 ##########################################
 #load spatial configuration files from QGIS shapefiles
 ##########################################
-seedpoint_array , entrance_bbx_pix, entrance_rec_pix, estuary_pix = SDS_tools.load_shapes_as_ndarrays(fn, 
-                                                                                         satname, sitename, settings['shapefile_EPSG'],
-                                                                                         georef, metadata)
-x0, y0 = seedpoint_array[0,:]
-x1, y1 = seedpoint_array[1,:]
+fn1 = SDS_tools.get_filenames(filenames[1],filepath, satname)
+# preprocess image (cloud mask + pansharpening/downsampling)
+im_ms, georef, cloud_mask, im_extra, imQA = SDS_preprocess.preprocess_single(fn1, satname,
+                                                                             settings['cloud_mask_issue'])
+    
+shapes = SDS_tools.load_shapes_as_ndarrays(satname, sitename, settings['shapefile_EPSG'],
+                                           georef, metadata)
+x0, y0 = shapes['seedandreceivingpoint'][0,:]
+x1, y1 = shapes['seedandreceivingpoint'][1,:]
+Xmin,Xmax,Ymin,Ymax = SDS_tools.get_bounding_box_minmax(shapes['entrance_bbx'])
 ##########################################
 # end of load spatial configuration files 
 ##########################################  
@@ -204,7 +210,7 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     #im_ndwi = SDS_tools.nd_index(im_ms[:,:,3], im_ms[:,:,1], cloud_mask)  #Automatic Water Extraction Index
 
     #create an NDWI image where only entrance area is shown
-    im_ndwi_masked = SDS_tools.maskimage_frompolygon(im_ndwi, entrance_bbx_pix)
+    im_ndwi_masked = SDS_tools.maskimage_frompolygon(im_ndwi, shapes['entrance_bbx'])
     
     #Manually do the otsu threshold based classification for entire image area 0 = water, 1 = dryland
     im_class_ndwi, t_otsu_fullscene = SDS_tools.classify_binary_otsu(im_ndwi, cloud_mask)
@@ -215,7 +221,7 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     for tol in np.round(np.linspace(0.05, 1, num=20),2):
         if NDWI_open == 'closed':
             im_ndwi_grow = flood_fill(im_ndwi_masked, (int(y0), int(x0)), 8888, tolerance=tol)
-            im_ndwi_grow_masked = SDS_tools.maskimage_frompolygon(im_ndwi_grow, entrance_rec_pix)  
+            im_ndwi_grow_masked = SDS_tools.maskimage_frompolygon(im_ndwi_grow, shapes['entrance_receiving_area'])  
             if np.isin(im_ndwi_grow_masked, 8888).any():  
                 tol2 = tol
                 NDWI_open = 'open'
@@ -226,7 +232,7 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     for toln in np.linspace(0.005, 0.3, num=60):
         if NIR_open == 'closed':
             im_NIR_grow = flood_fill(im_ms[:,:,3], (int(y0), int(x0)), 8888, tolerance=toln)
-            im_NIR_grow_masked = SDS_tools.maskimage_frompolygon(im_NIR_grow, entrance_rec_pix)   
+            im_NIR_grow_masked = SDS_tools.maskimage_frompolygon(im_NIR_grow, shapes['entrance_receiving_area'])   
             if np.isin(im_NIR_grow_masked, 8888).any(): 
                 toln2 = toln
                 NIR_open = 'open'
@@ -237,7 +243,7 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     for tols in np.linspace(0.005, 0.3, num=60):
         if SWIR_open == 'closed':
             im_SWIR_grow = flood_fill(im_ms[:,:,4], (int(y0), int(x0)), 8888, tolerance=tols)
-            im_SWIR_grow_masked = SDS_tools.maskimage_frompolygon(im_SWIR_grow, entrance_rec_pix)  
+            im_SWIR_grow_masked = SDS_tools.maskimage_frompolygon(im_SWIR_grow, shapes['entrance_receiving_area'])  
             if np.isin(im_SWIR_grow_masked, 8888).any(): 
                 SWIR_open = 'open'
                 tols2 = tols
@@ -249,9 +255,17 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     if im_class_fill[int(y1), int(x1)] == 8888:
         OTSU_ndwi_open = 'open'
         print('ICOLL entrance was open according to NDWI classification with OTSU = ' + str(round(t_otsu_masked, 3)))
-                
+       
+    #Use simple OTSU threshold NDWI based approach to test if ICOLL entrance is open or closed. 
+    OTSU_ndwi_ent_open = 'closed'
+    im_class_fill1 = flood_fill(im_class_ndwi_masked, (int(y0), int(x0)), 8888, tolerance=0.1)
+    if im_class_fill1[int(y1), int(x1)] == 8888:
+        OTSU_ndwi_ent_open = 'open'
+        print('ICOLL entrance was open according to NDWI classification with OTSU = ' + str(round(t_otsu_masked, 3)))
+       
+         
     #count pixels within estuary area for classified NDWI
-    im_ndwi_estuary = SDS_tools.maskimage_frompolygon(im_class_ndwi, estuary_pix)
+    im_ndwi_estuary = SDS_tools.maskimage_frompolygon(im_class_ndwi, shapes['estuary_outline'])
     SWE = np.round(np.sum(np.isin(im_ndwi_estuary, 1)) *15*15/1000000, 4)#convert nr. of pixels (15x15m) to square km
     
     Summary[date] =  satname, SWE,OTSU_ndwi_open, NDWI_open, tol2, NIR_open, toln2, SWIR_open,tols2 
@@ -269,9 +283,6 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     jpg_out_path =  os.path.join(filepath_data, sitename, 'jpg_files', 'classified')     
     if not os.path.exists(jpg_out_path):      
             os.makedirs(jpg_out_path)
-                
-    Xmin,Xmax,Ymin,Ymax = SDS_tools.get_bounding_box_minmax(entrance_bbx_pix)
-    print(Xmin,Xmax,Ymin,Ymax )
     
     fig = plt.figure(figsize=(25,15))
     from matplotlib import colors
@@ -282,68 +293,103 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     im_SWIR = SDS_preprocess.rescale_image_intensity(im_ms[:,:,4], cloud_mask, 99.9)
         
     #plot RGB
-    ax=plt.subplot(2,5,1) 
+    ax=plt.subplot(2,6,1) 
     plt.title(sitename + ' RGB') 
     plt.imshow(im_RGB)
     
-    #plot NIR
-    ax=plt.subplot(2,5,2) 
-    plt.title('NIR') 
-    plt.imshow(im_NIR, cmap='seismic')
-    
-    #plot SWIR
-    ax=plt.subplot(2,5,3) 
-    plt.title('SWIR') 
-    plt.imshow(im_SWIR, cmap='seismic')
-    
     #plot NDWI
-    ax=plt.subplot(2,5,4) 
+    ax=plt.subplot(2,6,2) 
     plt.title('NDWI') 
     plt.imshow(im_ndwi, cmap='seismic')
     #plt.xlim(Xmin, Xmax)
     #plt.ylim(Ymax,Ymin) 
     
-    #plot OTSU classified NDWI
-    ax=plt.subplot(2,5,5) 
-    plt.title('NDWI entrance') 
+    #plot NIR
+    ax=plt.subplot(2,6,3) 
+    plt.title('NIR') 
+    plt.imshow(im_NIR, cmap='seismic')
+    
+    #plot SWIR
+    ax=plt.subplot(2,6,4) 
+    plt.title('SWIR') 
+    plt.imshow(im_SWIR, cmap='seismic')
+    
+    #plot RGB zoomed in
+    ax=plt.subplot(2,6,5) 
+    plt.title('Entrance RGB') 
+    plt.imshow(im_RGB)
+    plt.xlim(Xmin, Xmax)
+    plt.ylim(Ymax,Ymin) 
+    plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
+    plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
+    plt.legend()
+    
+    #plot entrance onlz NDWI
+    ax=plt.subplot(2,6,6) 
+    plt.title('Entrance NDWI') 
     plt.imshow(im_ndwi_masked, cmap='seismic')  
     plt.xlim(Xmin, Xmax)
     plt.ylim(Ymax,Ymin) 
     
-    #plot OTSU classified NDWI
-    ax=plt.subplot(2,5,6) 
-    plt.title('NNP kilian classfied') 
-    plt.imshow(im_classif)       
+    #Kilian Neural netword
+    ax=plt.subplot(2,6,7) 
+    plt.title('Neural network clfd') 
+    plt.imshow(im_classif) 
+    
+        #plot OTSU classified NDWI
+    ax=plt.subplot(2,6,8) 
+    plt.title('NDWI clfd ' + OTSU_ndwi_open) 
+    plt.imshow(im_class_ndwi, cmap=cmap)
+    plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
+    plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
+    plt.legend()
+    
     
     #plot NIR region grower 
-    ax=plt.subplot(2,5,7) 
-    plt.title(' NIR grower toler= ' + str(toln2) + ' ' + NIR_open) 
+    ax=plt.subplot(2,6,9) 
+    plt.title(' NIR grower tol= ' + str(np.round(toln2,3)) + ' ' + NIR_open) 
     plt.imshow(im_NIR_grow, cmap=cmap) 
+    plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
+    plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
+    plt.legend()
     
     #plot SWIR region grower 
-    ax=plt.subplot(2,5,8) 
-    plt.title('SWIR grower toler= ' + str(tols2) + ' ' + SWIR_open) 
+    ax=plt.subplot(2,6,10) 
+    plt.title('SWIR grower tol= ' + str(np.round(tols2,3)) + ' ' + SWIR_open) 
     plt.imshow(im_SWIR_grow, cmap=cmap) 
+    plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
+    plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
+    plt.legend() 
     
-    #plot OTSU classified NDWI
-    ax=plt.subplot(2,5,9) 
-    plt.title('NDWI classfd ' + OTSU_ndwi_open) 
-    plt.imshow(im_class_ndwi, cmap=cmap) 
+    #NDWI classified for entrance only
+    ax=plt.subplot(2,6,11) 
+    plt.title('NDWI clfd entrance area '+ OTSU_ndwi_ent_open) 
+    plt.imshow(im_class_ndwi_masked, cmap=cmap) 
+    plt.xlim(Xmin, Xmax)
+    plt.ylim(Ymax,Ymin) 
+    plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
+    plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
+    plt.legend()
     
     #plot NDWI region grower 
-    ax=plt.subplot(2,5,10) 
-    plt.title('NDWI grower toler= ' + str(tol2) + ' ' + NDWI_open) 
+    ax=plt.subplot(2,6,12) 
+    plt.title('NDWI grower tol= ' + str(tol2) + ' ' + NDWI_open) 
     plt.imshow(im_ndwi_grow, cmap=cmap) 
     plt.xlim(Xmin, Xmax)
     plt.ylim(Ymax,Ymin) 
+    plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
+    plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
+    plt.legend()
     
     fig.tight_layout()
     plt.rcParams['savefig.jpeg_quality'] = 100
     fig.savefig(os.path.join(jpg_out_path, filenames[i][:19] + '_' + satname + '_cfd.jpg') , dpi=150)
     plt.close()
     ##########################################
+
 #plt.imshow(im_ndwi_masked)
 pdf1=pd.DataFrame(Summary).transpose()
+pdf1.to_csv(os.path.join(jpg_out_path, '_' + satname + '_entrance_summary_stats.csv'))
 
 
 

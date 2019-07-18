@@ -578,7 +578,7 @@ def get_bounding_box_minmax(polygonndarray):
 
 
 
-def load_shapes_as_ndarrays(fn, satname, sitename, shapefile_EPSG,  georef, metadata):
+def load_shapes_as_ndarrays(satname, sitename, shapefile_EPSG,  georef, metadata):
     
     #seed point for region growing
     shp_seed = os.path.join(os.getcwd(), 'Sites', sitename + '_ocean_seed.shp')    
@@ -618,7 +618,24 @@ def load_shapes_as_ndarrays(fn, satname, sitename, shapefile_EPSG,  georef, meta
     estuary = convert_epsg(estuary, shapefile_EPSG, image_epsg)
     estuary = convert_world2pix(estuary[0][:,:-1], georef)
     
-    return seedpoint_array , entrance_bbx_pix, entrance_rec_pix, estuary
+    #ICOLL entrance area bounding box for limiting spectral variability of scene
+    shp_WQ = os.path.join(os.getcwd(), 'Sites', sitename + '_WQ_area.shp')    
+    with fiona.open(shp_WQ, "r") as shapefile:
+        shp_WQ = [feature["geometry"] for feature in shapefile]  
+    WQ_pix = [[list(elem) for elem in shp_WQ[0]['coordinates'][0]]]
+    WQ_pix = convert_epsg(WQ_pix, shapefile_EPSG, image_epsg)
+    WQ_pix = convert_world2pix(WQ_pix[0][:,:-1], georef)
+    
+    shapes = { 
+    # general parameters:
+    'seedandreceivingpoint': seedpoint_array,        # threshold on maximum cloud cover
+    'entrance_bbx': entrance_bbx_pix,       # epsg code of spatial reference system desired for the output  
+    'entrance_receiving_area': entrance_rec_pix,
+    'estuary_outline' : estuary, 
+    'water_quality_area': WQ_pix
+    }
+    
+    return shapes
 
 
 def classify_binary_otsu(im_1d, cloud_mask):
