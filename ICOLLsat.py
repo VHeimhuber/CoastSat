@@ -13,7 +13,7 @@ import pickle
 import warnings
 warnings.filterwarnings("ignore")
 import matplotlib.pyplot as plt
-from coastsat import SDS_download, SDS_preprocess, SDS_shoreline, SDS_tools, SDS_transects
+from coastsat import SDS_download,SDS_download2, SDS_preprocess, SDS_shoreline, SDS_tools, SDS_transects
 import fiona
 import pandas as pd
 from osgeo import gdal, gdalconst
@@ -35,7 +35,7 @@ with fiona.open(shp_polygon, "r") as shapefile:
 polygon = [[list(elem) for elem in polygon[0]['coordinates'][0]]] #to get coordinates in the right format
 
 # date range
-dates = ['1990-01-01', '1993-06-02']
+dates = ['1990-01-01', '2000-01-01']
 
 # satellite missions
 sat_list = ['L5'] #,'L7','L8','S2']
@@ -57,10 +57,10 @@ inputs = {
 # Load site polygons from shapefile database
 
 # retrieve satellite images from GEE
-#metadata = SDS_download.retrieve_images(inputs)
+#metadata = SDS_download2.retrieve_images(inputs)
 
 # if you have already downloaded the images, just load the metadata file
-metadata = SDS_download.get_metadata(inputs) 
+metadata = SDS_download2.get_metadata(inputs) 
 
 # name of the site
 sitename = 'CATHIE'
@@ -88,7 +88,7 @@ settings = {
 }
 
 # [OPTIONAL] preprocess images (cloud masking, pansharpening/down-sampling)
-#SDS_preprocess.save_jpg(metadata, settings)
+SDS_preprocess.save_jpg(metadata, settings)
 
 # [OPTIONAL] create a reference shoreline (helps to identify outliers and false detections)
 #settings['reference_shoreline'] = SDS_preprocess.get_reference_sl(metadata, settings)
@@ -193,8 +193,8 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
                             (cloud_mask.shape[0]*cloud_mask.shape[1]))
     
     #skip image if cloud cover is above threshold
-    #if cloud_cover > settings['cloud_thresh']:     #####!!!!!##### Intermediate
-        #continue
+    if cloud_cover > settings['cloud_thresh']:     #####!!!!!##### Intermediate
+        continue
     
     # classify image in 4 classes (sand, whitewater, water, other) with NN classifier
     im_classif, im_labels = SDS_shoreline.classify_image_NN(im_ms, im_extra, cloud_mask,
@@ -270,7 +270,7 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     
     Summary[date] =  satname, SWE,OTSU_ndwi_open, NDWI_open, tol2, NIR_open, toln2, SWIR_open,tols2 
     
-    if satname =='L5' and i==1:
+    if satname =='L5' and i==0:
         im_class_ndwi_sum = np.copy(im_class_ndwi)
         im_class_ndwi_sum.fill(0)
     im_class_ndwi_sum = im_class_ndwi_sum + im_class_ndwi
@@ -389,6 +389,7 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
 
 #plt.imshow(im_ndwi_masked)
 pdf1=pd.DataFrame(Summary).transpose()
+pdf1.columns = [satname, 'SWE','OTSU_ndwi_OC',  'NDWI_OC', 'NDWI_RG_tol', 'NIR_OC', 'NIR_RG_tol', 'SWIR_OC','SWIR_RG_tol' ]
 pdf1.to_csv(os.path.join(jpg_out_path, '_' + satname + '_entrance_summary_stats.csv'))
 
 
