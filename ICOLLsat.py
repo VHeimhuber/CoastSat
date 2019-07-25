@@ -13,7 +13,7 @@ import pickle
 import warnings
 warnings.filterwarnings("ignore")
 import matplotlib.pyplot as plt
-from coastsat import SDS_download,SDS_download2, SDS_preprocess, SDS_shoreline, SDS_tools, SDS_transects
+from coastsat import SDS_download2, SDS_preprocess, SDS_shoreline, SDS_tools, SDS_transects  #SDS_download,
 import fiona
 import pandas as pd
 from osgeo import gdal, gdalconst
@@ -24,7 +24,7 @@ from skimage.segmentation import flood, flood_fill
 import csv
 
 # name of the site
-sitename = 'CATHIE'
+sitename = 'DURRAS'
 
 # region of interest (longitude, latitude in WGS84)
 
@@ -57,13 +57,10 @@ inputs = {
 # Load site polygons from shapefile database
 
 # retrieve satellite images from GEE
-#metadata = SDS_download2.retrieve_images(inputs)
+metadata = SDS_download2.retrieve_images(inputs)
 
 # if you have already downloaded the images, just load the metadata file
 metadata = SDS_download2.get_metadata(inputs) 
-
-# name of the site
-sitename = 'CATHIE'
 
 #%% 3. Batch shoreline detection
     
@@ -87,8 +84,10 @@ settings = {
     'dark_sand': False,         # only switch to True if your site has dark sand (e.g. black sand beach)
 }
 
+
+
 # [OPTIONAL] preprocess images (cloud masking, pansharpening/down-sampling)
-SDS_preprocess.save_jpg(metadata, settings)
+#SDS_preprocess.save_jpg(metadata, settings)
 
 # [OPTIONAL] create a reference shoreline (helps to identify outliers and false detections)
 #settings['reference_shoreline'] = SDS_preprocess.get_reference_sl(metadata, settings)
@@ -108,7 +107,6 @@ SDS_preprocess.save_jpg(metadata, settings)
 
 """
 Extracts ICOLL entrance characteristics from satellite images.
-
 """
 
 sitename = settings['inputs']['sitename']
@@ -117,13 +115,17 @@ filepath_data = settings['inputs']['filepath']
 output = dict([]) 
    
 # create a subfolder to store the .jpg images showing the detection
-filepath_jpg = os.path.join(filepath_data, sitename, 'jpg_files', 'detection2')
-if not os.path.exists(filepath_jpg):
-        os.makedirs(filepath_jpg)
+csv_out_path = os.path.join(os.getcwd(), 'data',sitename,  'results')
+if not os.path.exists(csv_out_path):
+        os.makedirs(csv_out_path)   
+jpg_out_path =  os.path.join(filepath_data, sitename, 'jpg_files', 'classified')     
+if not os.path.exists(jpg_out_path):      
+    os.makedirs(jpg_out_path)
+    
 # close all open figures
 plt.close('all')
 
-print('Analyzing ICOLL entrance:')
+print('Analyzing ICOLL entrance at: ' + sitename)
 
 # loop through satellite list
 #initialize summary dictionary
@@ -175,7 +177,7 @@ Xmin,Xmax,Ymin,Ymax = SDS_tools.get_bounding_box_minmax(shapes['entrance_bbx'])
 ##########################################
 #loop through all images and store results in pd DataFrame
 ##########################################                
-
+p=1
 for i in range(len(filenames)): #####!!!!!##### Intermediate
     #i=2        #####!!!!!##### Intermediate
     print('\r%s:   %d%%' % (satname,int(((i+1)/len(filenames))*100)), end='')
@@ -185,17 +187,19 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     # preprocess image (cloud mask + pansharpening/downsampling)
     im_ms, georef, cloud_mask, im_extra, imQA = SDS_preprocess.preprocess_single(fn, satname,
                                                                                  settings['cloud_mask_issue'])
-    
+
     # get image spatial reference system (epsg code) from metadata dict
     image_epsg = metadata[satname]['epsg'][i]
     # calculate cloud cover
     cloud_cover = np.divide(sum(sum(cloud_mask.astype(int))),
                             (cloud_mask.shape[0]*cloud_mask.shape[1]))
     
-    #skip image if cloud cover is above threshold
+    #skip image if cloud cover is above threshold                              #####!!!!!##### move up later on
     if cloud_cover > settings['cloud_thresh']:     #####!!!!!##### Intermediate
+        if i==0:
+            p=0
         continue
-    
+
     # classify image in 4 classes (sand, whitewater, water, other) with NN classifier
     im_classif, im_labels = SDS_shoreline.classify_image_NN(im_ms, im_extra, cloud_mask,
                             min_beach_area_pixels, clf)
@@ -211,82 +215,102 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
 
     #create an NDWI image where only entrance area is shown
     im_ndwi_masked = SDS_tools.maskimage_frompolygon(im_ndwi, shapes['entrance_bbx'])
+    plt.imshow(im_ndwi_masked, cmap='seismic')
+        
+    #calculate water colour indices in line with Bugnot et al. 2018
+    #0=blue, 1=green, 2=red, 4=NIR, 5=SWIR1
+    #green: green/red, blue: blue/red) 
+    im_GdR =  im_ms[:,:,1]/ im_ms[:,:,2]
+    im_BdR =  im_ms[:,:,0]/ im_ms[:,:,2]
+    #plt.imshow(im_RdR, cmap='seismic')
+    
+    #mask the water quality ration images and calculate the mean over the WQ area 
+    im_GdR_masked = SDS_tools.maskimage_frompolygon(im_GdR, shapes['water_quality_area'])
+    Green_by_red_mean = np.nanmean(im_GdR_masked)
+    im_BdR_masked = SDS_tools.maskimage_frompolygon(im_BdR, shapes['water_quality_area'])
+    Blue_by_red_mean = np.nanmean(im_BdR_masked)
     
     #Manually do the otsu threshold based classification for entire image area 0 = water, 1 = dryland
     im_class_ndwi, t_otsu_fullscene = SDS_tools.classify_binary_otsu(im_ndwi, cloud_mask)
     im_class_ndwi_masked, t_otsu_masked = SDS_tools.classify_binary_otsu(im_ndwi_masked, cloud_mask)
 
+#    if p==0 or i==0:
+#        im_class_ndwi_sum = np.copy(im_class_ndwi)
+#        im_class_ndwi_sum.fill(0)
+#        p=p+1
+#    else:
+#        im_class_ndwi_sum = im_class_ndwi_sum + im_class_ndwi
+        
     #Use region growing on NDWI to test wether ICOLL entrance is open or closed.
     NDWI_open = 'closed'
     for tol in np.round(np.linspace(0.05, 1, num=20),2):
         if NDWI_open == 'closed':
             im_ndwi_grow = flood_fill(im_ndwi_masked, (int(y0), int(x0)), 8888, tolerance=tol)
+            im_ndwi_grow[im_ndwi_grow != 8888] = 1
+            im_ndwi_grow[im_ndwi_grow == 8888] = 0
             im_ndwi_grow_masked = SDS_tools.maskimage_frompolygon(im_ndwi_grow, shapes['entrance_receiving_area'])  
-            if np.isin(im_ndwi_grow_masked, 8888).any():  
+            if np.isin(im_ndwi_grow_masked, 0).any():  
                 tol2 = tol
                 NDWI_open = 'open'
-                print('ICOLL entrance was open for NDWI with a minimum region growing tolerance of ' + str(tol2))
+                #print('ICOLL entrance was open for NDWI with a minimum region growing tolerance of ' + str(tol2))
     
     #Use region growing on NIR to test wether ICOLL entrance is open or closed.
     NIR_open = 'closed'
     for toln in np.linspace(0.005, 0.3, num=60):
         if NIR_open == 'closed':
             im_NIR_grow = flood_fill(im_ms[:,:,3], (int(y0), int(x0)), 8888, tolerance=toln)
+            im_NIR_grow[im_NIR_grow != 8888] = 1
+            im_NIR_grow[im_NIR_grow == 8888] = 0
             im_NIR_grow_masked = SDS_tools.maskimage_frompolygon(im_NIR_grow, shapes['entrance_receiving_area'])   
-            if np.isin(im_NIR_grow_masked, 8888).any(): 
+            if np.isin(im_NIR_grow_masked, 0).any(): 
                 toln2 = toln
                 NIR_open = 'open'
-                print('ICOLL entrance was open for NIR with a minimum region growing tolerance of ' + str(toln))
+                #print('ICOLL entrance was open for NIR with a minimum region growing tolerance of ' + str(toln))
     
     #Use region growing on SWIR to test wether ICOLL entrance is open or closed.
     SWIR_open = 'closed'
     for tols in np.linspace(0.005, 0.3, num=60):
         if SWIR_open == 'closed':
             im_SWIR_grow = flood_fill(im_ms[:,:,4], (int(y0), int(x0)), 8888, tolerance=tols)
+            im_SWIR_grow[im_SWIR_grow != 8888] = 1
+            im_SWIR_grow[im_SWIR_grow == 8888] = 0
             im_SWIR_grow_masked = SDS_tools.maskimage_frompolygon(im_SWIR_grow, shapes['entrance_receiving_area'])  
-            if np.isin(im_SWIR_grow_masked, 8888).any(): 
+            if np.isin(im_SWIR_grow_masked, 0).any(): 
                 SWIR_open = 'open'
                 tols2 = tols
-                print('ICOLL entrance was open for SWIR with a minimum region growing tolerance of ' + str(tols))
+                #print('ICOLL entrance was open for SWIR with a minimum region growing tolerance of ' + str(tols))
     
     #Use simple OTSU threshold NDWI based approach to test if ICOLL entrance is open or closed. 
     OTSU_ndwi_open = 'closed'
     im_class_fill = flood_fill(im_class_ndwi, (int(y0), int(x0)), 8888, tolerance=0.1)
-    if im_class_fill[int(y1), int(x1)] == 8888:
+    im_class_fill_masked = SDS_tools.maskimage_frompolygon(im_class_fill, shapes['entrance_receiving_area']) 
+    if np.isin(im_class_fill_masked, 8888).any():
         OTSU_ndwi_open = 'open'
-        print('ICOLL entrance was open according to NDWI classification with OTSU = ' + str(round(t_otsu_masked, 3)))
+        #print('ICOLL entrance was open according to NDWI classification with OTSU = ' + str(round(t_otsu_masked, 3)))
        
     #Use simple OTSU threshold NDWI based approach to test if ICOLL entrance is open or closed. 
     OTSU_ndwi_ent_open = 'closed'
     im_class_fill1 = flood_fill(im_class_ndwi_masked, (int(y0), int(x0)), 8888, tolerance=0.1)
-    if im_class_fill1[int(y1), int(x1)] == 8888:
+    im_class_fill_masked1 = SDS_tools.maskimage_frompolygon(im_class_fill1, shapes['entrance_receiving_area']) 
+    if np.isin(im_class_fill_masked1, 8888).any():
         OTSU_ndwi_ent_open = 'open'
-        print('ICOLL entrance was open according to NDWI classification with OTSU = ' + str(round(t_otsu_masked, 3)))
-       
+        print('ICOLL was open according to NDWI classification of entrance with OTSU = ' + str(round(t_otsu_masked, 3)))   
          
     #count pixels within estuary area for classified NDWI
     im_ndwi_estuary = SDS_tools.maskimage_frompolygon(im_class_ndwi, shapes['estuary_outline'])
     SWE = np.round(np.sum(np.isin(im_ndwi_estuary, 1)) *15*15/1000000, 4)#convert nr. of pixels (15x15m) to square km
     
-    Summary[date] =  satname, SWE,OTSU_ndwi_open, NDWI_open, tol2, NIR_open, toln2, SWIR_open,tols2 
-    
-    if satname =='L5' and i==0:
-        im_class_ndwi_sum = np.copy(im_class_ndwi)
-        im_class_ndwi_sum.fill(0)
-    im_class_ndwi_sum = im_class_ndwi_sum + im_class_ndwi
-    
+    #store results in summary dictionary 
+    Summary[date] =  satname, SWE, Green_by_red_mean, Blue_by_red_mean, OTSU_ndwi_open, OTSU_ndwi_ent_open, tol2, toln2,tols2 
     
     ##########################################
     #create plot and save to png
     ##########################################
     #bounding_boxes.append([Xmin, Xmax, Ymin, Ymax])
-    jpg_out_path =  os.path.join(filepath_data, sitename, 'jpg_files', 'classified')     
-    if not os.path.exists(jpg_out_path):      
-            os.makedirs(jpg_out_path)
     
     fig = plt.figure(figsize=(25,15))
     from matplotlib import colors
-    cmap = colors.ListedColormap(['red','blue'])
+    cmap = colors.ListedColormap(['blue','red'])
     
     im_RGB = SDS_preprocess.rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)
     im_NIR = SDS_preprocess.rescale_image_intensity(im_ms[:,:,3], cloud_mask, 99.9)
@@ -349,6 +373,8 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     ax=plt.subplot(2,6,9) 
     plt.title(' NIR grower tol= ' + str(np.round(toln2,3)) + ' ' + NIR_open) 
     plt.imshow(im_NIR_grow, cmap=cmap) 
+    plt.xlim(Xmin, Xmax)
+    plt.ylim(Ymax,Ymin) 
     plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
     plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
     plt.legend()
@@ -357,6 +383,8 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     ax=plt.subplot(2,6,10) 
     plt.title('SWIR grower tol= ' + str(np.round(tols2,3)) + ' ' + SWIR_open) 
     plt.imshow(im_SWIR_grow, cmap=cmap) 
+    plt.xlim(Xmin, Xmax)
+    plt.ylim(Ymax,Ymin) 
     plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
     plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
     plt.legend() 
@@ -383,14 +411,17 @@ for i in range(len(filenames)): #####!!!!!##### Intermediate
     
     fig.tight_layout()
     plt.rcParams['savefig.jpeg_quality'] = 100
-    fig.savefig(os.path.join(jpg_out_path, filenames[i][:19] + '_' + satname + '_cfd.jpg') , dpi=150)
+    fig.savefig(os.path.join(jpg_out_path, filenames[i][:19] + '_' + satname + '_cfd2.jpg') , dpi=150)
     plt.close()
     ##########################################
 
 #plt.imshow(im_ndwi_masked)
 pdf1=pd.DataFrame(Summary).transpose()
-pdf1.columns = [satname, 'SWE','OTSU_ndwi_OC',  'NDWI_OC', 'NDWI_RG_tol', 'NIR_OC', 'NIR_RG_tol', 'SWIR_OC','SWIR_RG_tol' ]
-pdf1.to_csv(os.path.join(jpg_out_path, '_' + satname + '_entrance_summary_stats.csv'))
+pdf1.columns = [satname, 'SWE', 'Green_by_red','Blue_by_red', 'OTSU_ndwi_ful',  'OTSU_ndwi_ent', 'NDWI_RG_tol', 'NIR_RG_tol', 'SWIR_RG_tol' ]
+pdf1.to_csv(os.path.join(csv_out_path, sitename + '_entrance_stats.csv'))
+       
+
+
 
 
 
