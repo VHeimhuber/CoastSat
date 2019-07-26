@@ -33,7 +33,7 @@ out_path = os.path.join(os.getcwd(), 'data',sitename,  'results')
         
 
 #load ICOLL entrance RS processed data time series from CSV
-path= os.path.join(os.getcwd(), 'data', sitename, 'results',  sitename + '__entrance_stats.csv')  #you need to adjust the directory here
+path= os.path.join(os.getcwd(), 'data', sitename, 'results',  sitename + 'S2_entrance_stats.csv')  #you need to adjust the directory here
 files=glob.glob(path)
 result_df = pd.read_csv(files[0], index_col=[0],  header=0) #index_col=0,
 result_df.index = pd.to_datetime(result_df.index, format='%Y-%m-%d-%H-%M-%S').normalize()
@@ -56,11 +56,15 @@ for i in range(0,len(Val_OC_df.iloc[:,0])):
 #remote duplicates and create a daily series of open vs. closed
 OC_df = OC_df[~OC_df.index.duplicated()]
 OC_df = OC_df.asfreq(freq='D', fill_value='closed')
-result_df = result_df.join(OC_df)
+
+#merge data frames
+result_df_full = result_df.join(OC_df)
+result_df = result_df.join(OC_df, how='inner')
+
 
 mapping = {'open': 1, 'closed': -1}
 result_df = result_df.replace({'OTSU_ndwi_ful': mapping, 'OTSU_ndwi_ent': mapping, 'known_state':mapping})
-
+result_df_full = result_df_full.replace({'OTSU_ndwi_ful': mapping, 'OTSU_ndwi_ent': mapping, 'known_state':mapping})
 
 ################################
 #Fit the decision tree
@@ -68,7 +72,7 @@ result_df = result_df.replace({'OTSU_ndwi_ful': mapping, 'OTSU_ndwi_ent': mappin
 
 #Prepare the data and fit the regression tree
 Y = result_df.iloc[:,-1]  #.values
-X = result_df.iloc[:,-6:-1]  #.values
+X = result_df.iloc[:,-4:-1]  #.values
 
 depth = []
 for i in range(1,20):
@@ -79,13 +83,17 @@ for i in range(1,20):
     #https://scikit-learn.org/stable/modules/model_evaluation.html
     depth.append((i,scores.mean()))
 
-plt.figure()
-plt.plot([i[0] for i in depth], [i[1] for i in depth])
-plt.axis("tight")
-plt.xlabel("Tree Depth")
-plt.ylabel("Accuracy")
+fig = plt.figure(figsize=(10,10))
+ax=plt.subplot(1,1,1)
+#plt.figure()
+ax.plot([i[0] for i in depth], [i[1] for i in depth])
+ax.axis("tight")
+#ax.xlabel("Tree Depth")
+#ax.ylabel("Accuracy")
 opt_depth = depth[np.argmax([i[1] for i in depth])]
-plt.plot(opt_depth[0] ,np.amax([i[1] for i in depth]),"or")
+ax.plot(opt_depth[0] ,np.amax([i[1] for i in depth]),"or")
+fig.tight_layout()
+fig.savefig(os.path.join(out_path, sitename + '_decision_tree_depth_optimizer.pdf') , dpi=150)
 
 
 #fit the optimum depth decision tree and output graphically
@@ -95,41 +103,57 @@ clf = clf.fit(X=x_train, y=y_train)
 
 #plot the decision tree
 dot_data = tree.export_graphviz(clf, out_file=None, 
-                     feature_names=result_df.columns[-6:-1] ,  
+                     feature_names=result_df.columns[-4:-1] ,  
                      #class_names=result_df.columns[-1],
                      class_names = ['closed', 'open'],  
                      filled=True, rounded=True,  
                      special_characters=True) 
 graph = graphviz.Source(dot_data) 
-graph.render(os.path.join(out_path, sitename + '_decision_tree_optDepth9')) 
+graph.render(os.path.join(out_path, sitename + '_decision_tree_optDepth')) 
 
-result_df['Tree_predicted'] = clf.predict(X.values)
+result_df_full['Tree_predicted'] = clf.predict(result_df_full_full.iloc[:,-4:-1].values)
 ################################
-
-
 
 
 ################################
 ####plot SWE extent time series from CSV
-fig = plt.figure(figsize=(25,15))
-ax=plt.subplot(2,1,1)
-result_df['SWE'].plot(kind='line', x=result_df.index, stacked=True, ax=ax)
-ax.xaxis.grid(False)
-plt.title(sitename + ' Surface Water Extent in square km') 
+for decade in [1985,1990,2000,2010]:
+    result_df_decadal = result_df_full.loc[(result_df_full.index > str(decade) + '-01-01') & (result_df_full.index < str(decade+10) + '-01-01')]
+    fig = plt.figure(figsize=(25,15))
+    ax=plt.subplot(3,1,1)
+    result_df_decadal['SWE'].plot(kind='line', x=result_df_decadal.index, stacked=True, ax=ax)
+    ax.xaxis.grid(False)
+    plt.title(sitename + ' Surface Water Extent in square km') 
+    
+    ax=plt.subplot(3,1,2)
+    #result_df_decadal['Tree_predicted'].interpolate(method='linear').plot(kind='line', x=result_df_decadal.index,  ax=ax)
+    ax.plot(result_df_decadal.index, result_df_decadal['Tree_predicted'], label="predicted")
+    ax.plot(result_df_decadal.index, result_df_decadal['known_state'], label="known")
+    ax.plot(result_df_decadal.index, result_df_decadal['OTSU_ndwi_ful'], label="OTSU",linestyle='--')
+    ax.xaxis.grid(False)
+    ax.legend()
+    plt.title(sitename + ' Open vs closed') 
+    
+    ax=plt.subplot(3,1,3)
+    #result_df_decadal['Tree_predicted'].interpolate(method='linear').plot(kind='line', x=result_df_decadal.index,  ax=ax)
+    ax.plot(result_df_decadal.index, result_df_decadal['Green_by_red'], label="predicted")
+    ax.plot(result_df_decadal.index, result_df_decadal['Blue_by_red'], label="known")
+    ax.xaxis.grid(False)
+    ax.legend()
+    plt.title(sitename + ' Water Colour Indices') 
+    
+    
+    fig.tight_layout()
+    plt.rcParams['savefig.jpeg_quality'] = 100
+    fig.savefig(os.path.join(out_path, sitename + '_'+ str(decade) + '_SWE_open_vs_closed.pdf') , dpi=150)
+    plt.close()
 
-ax=plt.subplot(2,1,2)
-#result_df['Tree_predicted'].interpolate(method='linear').plot(kind='line', x=result_df.index,  ax=ax)
-ax.plot(result_df.index, result_df['Tree_predicted'], label="predicted")
-ax.plot(result_df.index, result_df['known_state'], label="known")
-ax.plot(result_df.index, result_df['OTSU_ndwi_ful'], label="OTSU",linestyle='--')
-ax.xaxis.grid(False)
-ax.legend()
-plt.title(sitename + ' Open vs closed') 
 
-fig.tight_layout()
-plt.rcParams['savefig.jpeg_quality'] = 100
-fig.savefig(os.path.join(out_path, sitename + '_SWE_open_vs_closed.pdf') , dpi=150)
-plt.close()
+#next steps: Cound percentage open vs. closed per year/decade
+#use region growing form outside to in and from in to out! 
+#refine the estuarine entrance area even further and limit the area for region growing on NIR and SWIR
+#Include the SWIR2 band in the analysis also
+#Plot the histograms also
 ################################
 
 
