@@ -9,61 +9,75 @@
 #load modules
 import os
 import numpy as np
-import pickle
+#import pickle
 import warnings
 warnings.filterwarnings("ignore")
 import matplotlib.pyplot as plt
-from coastsat import SDS_download2, SDS_preprocess, SDS_shoreline, SDS_tools, SDS_transects  #SDS_download,
-import fiona
+from coastsat import SDS_download, SDS_preprocess, SDS_entrance, SDS_tools #SDS_transects  #SDS_download,
 import pandas as pd
-from osgeo import gdal, gdalconst
+#from osgeo import gdal, gdalconst
+
 # load additional machine learning modules #VH check if still needed
 from sklearn.externals import joblib
-import matplotlib.cm as cm
-from skimage.segmentation import flood, flood_fill
-import csv
+#import matplotlib.cm as cm
+#import csv
+import geopandas as gpd
+#from skimage.filters import sobel
+#from skimage.morphology import watershed
+from matplotlib import colors
+#import scipy
+
+
+
+#from glob import glob
+
+#img bands are B, G, R, NIR, SWIR starting from img[0]
+
+#Analysis version/name
+Analysis_version = 'V3' #this is a short user defined identifier that is added to end of directories to allow for multiple analysis to be done for each site with different parameters. 
 
 # name of the site
 sitename = 'DURRAS'
 
-# region of interest (longitude, latitude in WGS84)
-
-# can also be loaded from a .kml polygon
-shp_polygon = os.path.join(os.getcwd(), 'Sites', sitename + '_full_bounding_box.shp')
-with fiona.open(shp_polygon, "r") as shapefile:
-    polygon = [feature["geometry"] for feature in shapefile] 
-polygon = [[list(elem) for elem in polygon[0]['coordinates'][0]]] #to get coordinates in the right format
-
 # date range
-dates = ['1986-01-01', '2019-01-01']
+dates = ['1985-01-01', '2020-08-01']
 
 # satellite missions
 sat_list = ['L5','L7','L8','S2']
+sat_list = ['S2']
 
 # filepath where data will be stored
-filepath_data = os.path.join(os.getcwd(), 'data')
+filepath_data = os.path.join('H:/WRL_Projects/Estuary_sat_data', 'data')
 
+#load shapefile that conta0ins specific shapes for each ICOLL site as per readme file
+location_shp_fp = os.path.join(os.getcwd(), 'sites', 'All_sites.shp')
+Allsites = gpd.read_file(location_shp_fp)
+Site_shps = Allsites.loc[(Allsites.Sitename==sitename)]
+layers = Site_shps['layer'].values
+Site_shps.plot(color='None', edgecolor='black')
+BBX_coords = []
+for b in Site_shps.loc[(Site_shps.layer=='full_bounding_box')].geometry.boundary:
+    coords = np.dstack(b.coords.xy).tolist()
+    BBX_coords.append(*coords) 
+   
 # put all the inputs into a dictionnary
 inputs = {
-    'polygon': polygon,
+    'polygon': BBX_coords,
     'dates': dates,
     'sat_list': sat_list,
     'sitename': sitename,
-    'filepath': filepath_data
+    'filepath': filepath_data,
+    'location_shps': Site_shps,
+    'analysis_vrs' : Analysis_version
         }
 
-#%% 2. Retrieve images
-
-# Load site polygons from shapefile database
-
 # retrieve satellite images from GEE
-metadata = SDS_download2.retrieve_images(inputs)
+#metadata = SDS_download.retrieve_images(inputs)
 
 # if you have already downloaded the images, just load the metadata file
-metadata = SDS_download2.get_metadata(inputs) 
-
-#%% 3. Batch shoreline detection
+metadata = SDS_download.get_metadata(inputs) 
     
+
 # settings for the shoreline extraction
 settings = { 
     # general parameters:
@@ -72,7 +86,9 @@ settings = {
     'manual_seed': False,
     'shapefile_EPSG' : 4326,     #epsg of shapefiles that define sub regions for entrance detection 
     # quality control:
-    'check_detection': True,    # if True, shows each shoreline detection to the user for validation
+    'check_detection': True,    # if True, shows each entrance state detection to the user for validation #####!!!!!##### Intermediate - change variable to manual_input
+    'shuffle_training_imgs':True,  # if True, images durin manual/visual detection of entrance states are shuffled in time to provide a more independent sample
+    'shuffle_entrance_paths_imgs':True, 
     'save_figure': True,        # if True, saves a figure showing the mapped shoreline for each image
     # add the inputs defined previously
     'inputs': inputs,
@@ -82,6 +98,7 @@ settings = {
     'min_length_sl': 200,       # minimum length (in metres) of shoreline perimeter to be valid
     'cloud_mask_issue': False,  # switch this parameter to True if sand pixels are masked (in black) on many images  
     'dark_sand': False,         # only switch to True if your site has dark sand (e.g. black sand beach)
+    'color_sand': False,         # set to true in case of black, grey, white, orange beaches 
 }
 
 
@@ -98,529 +115,676 @@ settings = {
 ##### Original Code Above
 
 
-
-
-
-
-
-
-
+#%%  Step 1: create training data
 """
-Extracts ICOLL entrance characteristics from satellite images.
+Extracts ICOLL entrance characteristics from satellite images. Method development
+Either do a 100% manual analysis or create a training and validation dataset for automated classification
 """
 
-sitename = settings['inputs']['sitename']
-filepath_data = settings['inputs']['filepath']
-# initialise output structure
-output = dict([]) 
-   
-# create a subfolder to store the .jpg images showing the detection
-csv_out_path = os.path.join(os.getcwd(), 'data',sitename,  'results')
-if not os.path.exists(csv_out_path):
-        os.makedirs(csv_out_path)   
-jpg_out_path =  os.path.join(filepath_data, sitename, 'jpg_files', 'classified')     
-if not os.path.exists(jpg_out_path):      
-    os.makedirs(jpg_out_path)
+#run the training data creator function
+Training_data_df = SDS_entrance.create_training_data(metadata, settings)
     
-# close all open figures
-plt.close('all')
 
-print('Analyzing ICOLL entrance at: ' + sitename)
+#%%  Step 2: digitize transects
+"""
+# Currently research only: Run a function that enables the user to manually draw the seed to receiver 
+connection for every image to generate a validation dataset
+# After the dataset is created for a number of open and closed images, a series of interactive plots are available to illustrate the method
+"""
+#import re
+#import glob
+#import matplotlib
+#import matplotlib.pyplot as plt
+#from datetime import datetime 
+#
+#
+##First create 20 closed and 20 open transects based on the yellow points (from ocean to ICOLL)               
+#Experiment_code = 'Exp_1_S2_Yellow'
+#csv_out_path = os.path.join(settings['inputs']['filepath'], sitename,  'results_' + settings['inputs']['analysis_vrs'], Experiment_code)
+#if not os.path.exists(csv_out_path):
+#        os.makedirs(csv_out_path)  
+#       
+##User to digitize transects for closed and then open conditions via the following two lines
+#XS_c_df, XS_c_gdf, geoms = SDS_entrance.user_defined_entrance_paths(metadata, settings, Experiment_code, Experiment_code  + '_closed') 
+#XS_o_df, XS_o_gdf, geoms  = SDS_entrance.user_defined_entrance_paths(metadata, settings, Experiment_code, Experiment_code + '_open')
+# 
+##Then create 20 closed and 20 open transects based on the green points (from north to south, always starting from the same point)               
+#Experiment_code = 'Exp_1_S2_Green'
+#csv_out_path = os.path.join(settings['inputs']['filepath'], sitename,  'results_' + settings['inputs']['analysis_vrs'], Experiment_code)
+#if not os.path.exists(csv_out_path):
+#        os.makedirs(csv_out_path)  
+#        
+##User to digitize transects for closed and then open conditions via the following two lines
+#XS_c_df, XS_c_gdf, geoms = SDS_entrance.user_defined_entrance_paths(metadata, settings, Experiment_code, Experiment_code  + '_closed') 
+#XS_o_df, XS_o_gdf, geoms  = SDS_entrance.user_defined_entrance_paths(metadata, settings, Experiment_code, Experiment_code + '_open')
+#
+#
+#Experiment_code = 'Exp_5_S2'
+#csv_out_path = os.path.join(settings['inputs']['filepath'], sitename,  'results_' + settings['inputs']['analysis_vrs'], Experiment_code)
+###if XS are already digitized for a given Experiment_code, just load them here via csv. 
+#XS_c_df =  pd.read_csv(glob.glob(csv_out_path + '/*' +  '*closed*' '*.csv' )[0], index_col=0)  
+#XS_o_df =  pd.read_csv(glob.glob(csv_out_path + '/*' +  '*open*' '*.csv' )[0], index_col=0)  
+#XS_c_gdf =  gpd.read_file(glob.glob(csv_out_path + '/*' +  '*closed*' '*.shp')[0])  
+#XS_o_gdf = gpd.read_file(glob.glob(csv_out_path + '/*' +  '*open*' '*.shp')[0]) 
 
-# loop through satellite list
-#initialize summary dictionary
-Summary={} 
-for satname in metadata.keys():                 #####!!!!!##### Intermediate
-    #satname =  'L5'
-    # get images
-    filepath = SDS_tools.get_filepath(settings['inputs'],satname)
-    filenames = metadata[satname]['filenames']
-    #filenames = filenames[46:52]                                                 #####!!!!!##### Intermediate
+
+ 
+#%%  Step 2B: find transects automatically and write results to dataframe
+
+#to do list
+#extract XS from both NDWI and mNDWI
+#for NDWI, apply NN classifier first and then replace white water with -.6 or sth to enable the least cost path finder 
+#write least coast path to pd dataframe original infrastructure
+#loop through satellites and all images within
+#do along and across berm
+#bring in truth data for open vs. closed vs. unclear either via user input or externally and incorporate into plots
+#run 4-5 case studies
+
+from coastsat import SDS_entrance
+
+settings_entrance =  { # set parameters for automated entrance detection
+                      'path_index': 'ndwi',
+                      'Experiment_code': 'Exp_11_S2',  #unique identifier for the experiment. Outputs will be stored in this sub folder
+                      'sand_percentile': 40 ,                 #percentile of sand to plot in addition to 10th, 20th and 30th (which are always done)
+                      'ndwi_whitewhater_delta': -0.2,       #where the NN classifier detects whitewater, NDWI will be adjusted by this value to facilitate least cost path finding
+                      'ndwi_sand_delta': 0.5 ,                   #where the NN classifier detects sand, NDWI will be adjusted by this value to facilitate least cost path finding
+                      'vhline_transparancy': 0.8 ,          #transparancy of v and h lines in the output plots
+                      'hist_bw': 0.1,                       #parameter for histogram smoothing in the output plots
+                      'tide_bool': True ,                   #include FES-based analysis of tides?
+                      'plot_bool': True  ,                  #create the output plots in addition to csvs?
+                      }
+
+XS_c_df, XS_c_gdf,geoms, sat_tide_df = SDS_entrance.automated_entrance_paths(metadata, settings, settings_entrance) 
+
+
     
-    # load classifiers and
-    if satname in ['L5','L7','L8']:
-        pixel_size = 15            
-        if settings['dark_sand']:
-            clf = joblib.load(os.path.join(os.getcwd(), 'classifiers', 'NN_4classes_Landsat_dark.pkl'))
+
+
+
+#%%  Step 3 plot figures:
+
+
+#%%Figure A
+"""
+########################################################################
+Figure A - show only images & different spectral transects.
+The idea behind this figure is to just illustrate the concept of the 
+methodology by showing 3 open and 3 closed images and the corresponding
+spectral transects for three spectral indices
+This plot is interactive and require a number of user inputs
+########################################################################
+"""
+#Set up the plot for the key method figure of the paper
+satname = 'S2'
+filepath = SDS_tools.get_filepath(settings['inputs'],satname)
+filenames = metadata[satname]['filenames']
+epsg_dict = dict(zip(filenames, metadata[satname]['epsg']))    
+
+figure_A_out_path = os.path.join(csv_out_path, 'figure_A')
+if not os.path.exists(figure_A_out_path ):
+        os.makedirs(figure_A_out_path) 
+        
+#plot font size and type
+ALPHA_figs = 1
+font = {'family' : 'sans-serif',
+        'weight' : 'normal',
+        'size'   : 20}
+matplotlib.rc('font', **font)     
+
+#plot settings
+nrows = 5 
+xaxisadjust = 20
+Interpolation_method = "bicubic" #"None" #"bicubic")
+labelsize = 26
+spectral_index = 'mndwi'
+
+linestyle = ['-', '--', '-.', '-', '--', '-.', '-', '--', '-.','-', '--', '-.', '-', '--', '-.',
+             '-', '--', '-.','-', '--', '-.', '-', '--', '-.', '-', '--', '-.']
+
+for j in range(0, len(XS_c_df.filter(regex=satname).filter(regex='_mndwi').columns)-1, 3):
+    k = 1
+    fig = plt.figure(figsize=(21,30))   
+    if j> min(len(XS_c_df.filter(regex=satname).filter(regex='_mndwi').columns), len(XS_o_df.filter(regex=satname).filter(regex='_mndwi').columns))-2:
+        j = j-2
+    print('processed ' + str(j))
+    for i in range(j,j+3,1):
+        plot_identifier = 'single_index'
+    #for i in range(0,3,1):
+        ####################################
+        #Plot the closed entrance states
+        ####################################
+        Loopimage_c_date = XS_c_df.filter(regex=satname).filter(regex='_mndwi').columns[i][:-9]
+        r = re.compile(".*" + Loopimage_c_date)    
+        #combined_df.filter(regex=Gauge[3:]+'_')
+        fn = SDS_tools.get_filenames(list(filter(r.match, filenames))[0],filepath, satname)
+        #print(fn)
+        im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = SDS_preprocess.preprocess_single(fn, satname, settings['cloud_mask_issue'])
+        # rescale image intensity for display purposes
+
+        if spectral_index == 'mndwi':
+            im_plot  = SDS_tools.nd_index(im_ms[:,:,4], im_ms[:,:,1], cloud_mask) 
+        elif spectral_index == 'ndwi':
+            im_plot  = SDS_tools.nd_index(im_ms[:,:,3], im_ms[:,:,1], cloud_mask) 
         else:
-            clf = joblib.load(os.path.join(os.getcwd(), 'classifiers', 'NN_4classes_Landsat.pkl'))      
-    elif satname == 'S2':
-        pixel_size = 10
-        clf = joblib.load(os.path.join(os.getcwd(), 'classifiers', 'NN_4classes_S2.pkl'))
-    
-    # convert settings['min_beach_area'] and settings['buffer_size'] from metres to pixels            
-    buffer_size_pixels = np.ceil(settings['buffer_size']/pixel_size)
-    min_beach_area_pixels = np.ceil(settings['min_beach_area']/pixel_size**2)
-      
-    
-    
-    
-    ##########################################
-    #load spatial configuration files from QGIS shapefiles
-    ##########################################
-    fn1 = SDS_tools.get_filenames(filenames[1],filepath, satname)
-    # preprocess image (cloud mask + pansharpening/downsampling)
-    im_ms, georef, cloud_mask, im_extra, imQA = SDS_preprocess.preprocess_single(fn1, satname,
-                                                                                 settings['cloud_mask_issue'])
-        
-    shapes = SDS_tools.load_shapes_as_ndarrays(satname, sitename, settings['shapefile_EPSG'],
-                                               georef, metadata)
-    x0, y0 = shapes['seedandreceivingpoint'][0,:]
-    x1, y1 = shapes['seedandreceivingpoint'][1,:]
-    Xmin,Xmax,Ymin,Ymax = SDS_tools.get_bounding_box_minmax(shapes['entrance_bbx'])
-    ##########################################
-    # end of load spatial configuration files 
-    ##########################################  
-        
-       
-    
-    ##########################################
-    #loop through all images and store results in pd DataFrame
-    ##########################################                
-    for i in range(len(filenames)): #####!!!!!##### Intermediate
-        #i=2        #####!!!!!##### Intermediate
-        print('\r%s:   %d%%' % (satname,int(((i+1)/len(filenames))*100)), end='')
-        # get image filename
-        fn = SDS_tools.get_filenames(filenames[i],filepath, satname)
-        date = filenames[i][:19]
-        # preprocess image (cloud mask + pansharpening/downsampling)
-        im_ms, georef, cloud_mask, im_extra, imQA = SDS_preprocess.preprocess_single(fn, satname,
-                                                                                     settings['cloud_mask_issue'])
-    
-        # get image spatial reference system (epsg code) from metadata dict
-        image_epsg = metadata[satname]['epsg'][i]
-        # calculate cloud cover
-        cloud_cover = np.divide(sum(sum(cloud_mask.astype(int))),
-                                (cloud_mask.shape[0]*cloud_mask.shape[1]))
-        
-        #skip image if cloud cover is above threshold                              #####!!!!!##### move up later on
-        if cloud_cover > settings['cloud_thresh']:     #####!!!!!##### Intermediate
-            continue
-        # classify image in 4 classes (sand, whitewater, water, other) with NN classifier
-        im_classif, im_labels = SDS_shoreline.classify_image_NN(im_ms, im_extra, cloud_mask,
-                                min_beach_area_pixels, clf)
-        
-        # calculate a buffer around the reference shoreline (if any has been digitised)
-        im_ref_buffer = SDS_shoreline.create_shoreline_buffer(cloud_mask.shape, georef, image_epsg,
-                                                pixel_size, settings)
-        
-        # compute NDWI image (NIR)
-        im_ndwi = SDS_tools.nd_index(im_ms[:,:,3], im_ms[:,:,1], cloud_mask)  #NDWI
-        #im_ndwi = SDS_tools.nd_index(im_ms[:,:,3], im_ms[:,:,1], cloud_mask)  #ndwi
-        #im_ndwi = SDS_tools.nd_index(im_ms[:,:,3], im_ms[:,:,1], cloud_mask)  #Automatic Water Extraction Index
-    
-        #create an NDWI image where only entrance area is shown
-        im_ndwi_masked = SDS_tools.maskimage_frompolygon(im_ndwi, shapes['entrance_bbx'])
-        plt.imshow(im_ndwi_masked, cmap='seismic')
+            im_plot = SDS_preprocess.rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)
             
-        #calculate water colour indices in line with Bugnot et al. 2018
-        #0=blue, 1=green, 2=red, 4=NIR, 5=SWIR1
-        #green: green/red, blue: blue/red) 
-        im_GdR =  im_ms[:,:,1]/ im_ms[:,:,2]
-        im_BdR =  im_ms[:,:,0]/ im_ms[:,:,2]
-        #plt.imshow(im_RdR, cmap='seismic')
-        
-        #mask the water quality ration images and calculate the mean over the WQ area 
-        im_GdR_masked = SDS_tools.maskimage_frompolygon(im_GdR, shapes['water_quality_area'])
-        Green_by_red_mean = np.nanmean(im_GdR_masked)
-        im_BdR_masked = SDS_tools.maskimage_frompolygon(im_BdR, shapes['water_quality_area'])
-        Blue_by_red_mean = np.nanmean(im_BdR_masked)
-        
-        #Manually do the otsu threshold based classification for entire image area 0 = water, 1 = dryland
-        im_class_ndwi, t_otsu_fullscene = SDS_tools.classify_binary_otsu(im_ndwi, cloud_mask)
-        im_class_ndwi_masked, t_otsu_masked = SDS_tools.classify_binary_otsu(im_ndwi_masked, cloud_mask)
+        image_epsg = epsg_dict[list(filter(r.match, filenames))[0]]
+        shapes = SDS_tools.load_shapes_as_ndarrays_2(layers,Site_shps, satname, sitename, settings['shapefile_EPSG'],
+                                           georef, metadata, image_epsg)        
+        x0, y0 = shapes['ocean_seed'][1,:]
+        x1, y1 = shapes['entrance_seed'][1,:]
+        Xmin,Xmax,Ymin,Ymax = SDS_tools.get_bounding_box_minmax(shapes['entrance_bounding_box'])
     
-    #    if p==0 or i==0:
-    #        im_class_ndwi_sum = np.copy(im_class_ndwi)
-    #        im_class_ndwi_sum.fill(0)
-    #        p=p+1
-    #    else:
-    #        im_class_ndwi_sum = im_class_ndwi_sum + im_class_ndwi
-            
-        #Use region growing on NDWI to test wether ICOLL entrance is open or closed.
-        NDWI_open = 'closed'
-        for tol in np.round(np.linspace(0.05, 1, num=20),2):
-            if NDWI_open == 'closed':
-                im_ndwi_grow = flood_fill(im_ndwi_masked, (int(y0), int(x0)), 8888, tolerance=tol)
-                im_ndwi_grow[im_ndwi_grow != 8888] = 1 #and ~np.isnan(im_ndwi_grow)
-                im_ndwi_grow[im_ndwi_grow == 8888] = 0
-                im_ndwi_grow_masked = SDS_tools.maskimage_frompolygon(im_ndwi_grow, shapes['entrance_receiving_area'])  
-                if np.isin(im_ndwi_grow_masked, 0).any():  
-                    tol2 = tol
-                    NDWI_open = 'open'
-                    #print('ICOLL entrance was open for NDWI with a minimum region growing tolerance of ' + str(tol2))
-        
-        #Use region growing on NIR to test wether ICOLL entrance is open or closed.
-        NIR_open = 'closed'
-        for toln in np.linspace(0.005, 0.3, num=60):
-            if NIR_open == 'closed':
-                im_NIR_grow = flood_fill(im_ms[:,:,3], (int(y0), int(x0)), 8888, tolerance=toln)
-                im_NIR_grow[im_NIR_grow != 8888] = 1
-                im_NIR_grow[im_NIR_grow == 8888] = 0
-                im_NIR_grow_masked = SDS_tools.maskimage_frompolygon(im_NIR_grow, shapes['entrance_receiving_area'])   
-                if np.isin(im_NIR_grow_masked, 0).any(): 
-                    toln2 = toln
-                    NIR_open = 'open'
-                    #print('ICOLL entrance was open for NIR with a minimum region growing tolerance of ' + str(toln))
-        
-        #Use region growing on SWIR to test wether ICOLL entrance is open or closed.
-        SWIR_open = 'closed'
-        for tols in np.linspace(0.005, 0.3, num=60):
-            if SWIR_open == 'closed':
-                im_SWIR_grow = flood_fill(im_ms[:,:,4], (int(y0), int(x0)), 8888, tolerance=tols)
-                im_SWIR_grow[im_SWIR_grow != 8888] = 1
-                im_SWIR_grow[im_SWIR_grow == 8888] = 0
-                im_SWIR_grow_masked = SDS_tools.maskimage_frompolygon(im_SWIR_grow, shapes['entrance_receiving_area'])  
-                if np.isin(im_SWIR_grow_masked, 0).any(): 
-                    SWIR_open = 'open'
-                    tols2 = tols
-                    #print('ICOLL entrance was open for SWIR with a minimum region growing tolerance of ' + str(tols))
-        
-        #Use simple OTSU threshold NDWI based approach to test if ICOLL entrance is open or closed. 
-        OTSU_ndwi_open = 'closed'
-        im_class_fill = flood_fill(im_class_ndwi, (int(y0), int(x0)), 8888, tolerance=0.1)
-        im_class_fill_masked = SDS_tools.maskimage_frompolygon(im_class_fill, shapes['entrance_receiving_area']) 
-        if np.isin(im_class_fill_masked, 8888).any():
-            OTSU_ndwi_open = 'open'
-            #print('ICOLL entrance was open according to NDWI classification with OTSU = ' + str(round(t_otsu_masked, 3)))
-           
-        #Use simple OTSU threshold NDWI based approach to test if ICOLL entrance is open or closed. 
-        OTSU_ndwi_ent_open = 'closed'
-        im_class_fill1 = flood_fill(im_class_ndwi_masked, (int(y0), int(x0)), 8888, tolerance=0.1)
-        im_class_fill_masked1 = SDS_tools.maskimage_frompolygon(im_class_fill1, shapes['entrance_receiving_area']) 
-        if np.isin(im_class_fill_masked1, 8888).any():
-            OTSU_ndwi_ent_open = 'open'
-            print('ICOLL was open according to NDWI classification of entrance with OTSU = ' + str(round(t_otsu_masked, 3)))   
-             
-        #count pixels within estuary area for classified NDWI
-        im_ndwi_estuary = SDS_tools.maskimage_frompolygon(im_class_ndwi, shapes['estuary_outline'])
-        SWE = np.round(np.sum(np.isin(im_ndwi_estuary, 1)) *15*15/1000000, 4)#convert nr. of pixels (15x15m) to square km
-        
-        #store results in summary dictionary 
-        Summary[date] =  satname, SWE, Green_by_red_mean, Blue_by_red_mean, OTSU_ndwi_open, OTSU_ndwi_ent_open, tol2, toln2,tols2 
-        
-        ##########################################
-        #create plot and save to png
-        ##########################################
-        #bounding_boxes.append([Xmin, Xmax, Ymin, Ymax])
-        
-        fig = plt.figure(figsize=(25,15))
-        from matplotlib import colors
-        cmap = colors.ListedColormap(['blue','red'])
-        
-        im_RGB = SDS_preprocess.rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)
-        im_NIR = SDS_preprocess.rescale_image_intensity(im_ms[:,:,3], cloud_mask, 99.9)
-        im_SWIR = SDS_preprocess.rescale_image_intensity(im_ms[:,:,4], cloud_mask, 99.9)
-            
-        #plot RGB
-        ax=plt.subplot(2,6,1) 
-        plt.title(sitename + ' RGB') 
-        plt.imshow(im_RGB)
-        
-        #plot NDWI
-        ax=plt.subplot(2,6,2) 
-        plt.title('NDWI') 
-        plt.imshow(im_ndwi, cmap='seismic')
-        #plt.xlim(Xmin, Xmax)
-        #plt.ylim(Ymax,Ymin) 
-        
-        #plot NIR
-        ax=plt.subplot(2,6,3) 
-        plt.title('NIR') 
-        plt.imshow(im_NIR, cmap='seismic')
-        plt.xlim(Xmin, Xmax)
-        plt.ylim(Ymax,Ymin) 
-        plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
-        plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
-        plt.legend()
-        
-        #plot SWIR
-        ax=plt.subplot(2,6,4) 
-        plt.title('SWIR') 
-        plt.imshow(im_SWIR, cmap='seismic')
-        plt.xlim(Xmin, Xmax)
-        plt.ylim(Ymax,Ymin)
-        plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
-        plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
-        plt.legend()
-        
-        #plot RGB zoomed in
-        ax=plt.subplot(2,6,5) 
-        plt.title('Entrance RGB') 
-        plt.imshow(im_RGB)
-        plt.xlim(Xmin, Xmax)
-        plt.ylim(Ymax,Ymin) 
-        plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
-        plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
-        plt.legend()
-        
-        #plot entrance onlz NDWI
-        ax=plt.subplot(2,6,6) 
-        plt.title('Entrance NDWI') 
-        plt.imshow(im_ndwi_masked, cmap='seismic')  
-        plt.xlim(Xmin, Xmax)
-        plt.ylim(Ymax,Ymin) 
-        
-        #Kilian Neural netword
-        ax=plt.subplot(2,6,7) 
-        plt.title('Neural network clfd') 
-        plt.imshow(im_classif) 
-        
-            #plot OTSU classified NDWI
-        ax=plt.subplot(2,6,8) 
-        plt.title('NDWI clfd ' + OTSU_ndwi_open) 
-        plt.imshow(im_class_ndwi, cmap=cmap)
-        plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
-        plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
-        plt.legend()
-        
-        
-        #plot NIR region grower 
-        ax=plt.subplot(2,6,9) 
-        plt.title(' NIR grower tol= ' + str(np.round(toln2,3)) + ' ' + NIR_open) 
-        plt.imshow(im_NIR_grow, cmap=cmap) 
-        plt.xlim(Xmin, Xmax)
-        plt.ylim(Ymax,Ymin) 
-        plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
-        plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
-        plt.legend()
-        
-        #plot SWIR region grower 
-        ax=plt.subplot(2,6,10) 
-        plt.title('SWIR grower tol= ' + str(np.round(tols2,3)) + ' ' + SWIR_open) 
-        plt.imshow(im_SWIR_grow, cmap=cmap) 
-        plt.xlim(Xmin, Xmax)
-        plt.ylim(Ymax,Ymin) 
-        plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
-        plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
-        plt.legend() 
-        
-        #NDWI classified for entrance only
-        ax=plt.subplot(2,6,11) 
-        plt.title('NDWI clfd entrance area '+ OTSU_ndwi_ent_open) 
-        plt.imshow(im_class_ndwi_masked, cmap=cmap) 
-        plt.xlim(Xmin, Xmax)
-        plt.ylim(Ymax,Ymin) 
-        plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
-        plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
-        plt.legend()
-        
-        #plot NDWI region grower 
-        ax=plt.subplot(2,6,12) 
-        plt.title('NDWI grower tol= ' + str(tol2) + ' ' + NDWI_open) 
-        plt.imshow(im_ndwi_grow, cmap=cmap) 
-        plt.xlim(Xmin, Xmax)
-        plt.ylim(Ymax,Ymin) 
-        plt.plot(x0, y0, 'ro', color='yellow', marker="X", label='Reg. growing seed')
-        plt.plot(x1, y1, 'ro', color='yellow', marker="D", label='Reg. growing receiver')
-        plt.legend()
-        
-        fig.tight_layout()
-        plt.rcParams['savefig.jpeg_quality'] = 100
-        fig.savefig(os.path.join(jpg_out_path, filenames[i][:19] + '_' + satname + '_cfd2.jpg') , dpi=150)
-        plt.close()
-        ##########################################
+        ax=plt.subplot(nrows,2,k)
+        plt.title(satname + ' ' + Loopimage_c_date + ' '  + spectral_index + ' closed') 
     
-    #plt.imshow(im_ndwi_masked)
-    pdf1=pd.DataFrame(Summary).transpose()
-    pdf1.columns = [satname, 'SWE', 'Green_by_red','Blue_by_red', 'OTSU_ndwi_ful',  'OTSU_ndwi_ent', 'NDWI_RG_tol', 'NIR_RG_tol', 'SWIR_RG_tol' ]
-    pdf1.to_csv(os.path.join(csv_out_path, sitename + satname + '_entrance_stats.csv'))
-           
+        if spectral_index in ['mndwi', 'ndwi']:
+            plt.imshow(im_plot, cmap='seismic', vmin=-1, vmax=1) 
+            plt.colorbar()
+        else:
+            plt.imshow(im_plot, interpolation=Interpolation_method) 
+        
+        plt.rcParams["axes.grid"] = False
+        plt.xlim(Xmin-xaxisadjust , Xmax+xaxisadjust)
+        plt.ylim(Ymax,Ymin) 
+        #ax.grid(None)
+        ax.axis('off')
+        #plt.plot(x0, y0, 'ro', color='yellow', marker="X")
+        #plt.plot(x1, y1, 'ro', color='yellow', marker="D")
+
+        #plot the digitized entrance paths on top of images - failing due to mixed up epsgs
+        line = list(XS_c_gdf[XS_c_gdf['date'].str.contains(Loopimage_c_date)].geometry.iloc[0].coords)
+        #df = pd.DataFrame(line).drop(columns=2).values 
+        pts_world_interp_reproj = SDS_tools.convert_epsg(pd.DataFrame(line).drop(columns=2).values , settings['output_epsg'], image_epsg)
+        df2 = pd.DataFrame(pts_world_interp_reproj)
+        df2 = df2.drop(columns=2)  
+        pts_pix_interp = SDS_tools.convert_world2pix(df2.values, georef)
+        ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], linestyle=linestyle[i], color='lightblue')
+        ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko',   color='lightblue')
+        ax.plot(pts_pix_interp[-1,0], pts_pix_interp[-1,1],'ko', color='lightblue')  
+        plt.text(pts_pix_interp[0,0]+3, pts_pix_interp[0,1]+3,'A',horizontalalignment='left', color='lightblue' , fontsize=labelsize)
+        plt.text(pts_pix_interp[-1,0]+3, pts_pix_interp[-1,1]+3,'B',horizontalalignment='left', color='lightblue', fontsize=labelsize)
+        
+        ####################################
+        #Plot the open entrance states
+        ####################################
+        Loopimage_o_date = XS_o_df.filter(regex=satname).filter(regex='_mndwi').columns[i][:-9]
+        r = re.compile(".*" + Loopimage_o_date)    
+        #combined_df.filter(regex=Gauge[3:]+'_')
+        fn = SDS_tools.get_filenames(list(filter(r.match, filenames))[0],filepath, satname)
+        im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = SDS_preprocess.preprocess_single(fn, satname, settings['cloud_mask_issue'])
+        
+        # rescale image intensity for display purposes
+        if spectral_index == 'mndwi':
+            im_plot  = SDS_tools.nd_index(im_ms[:,:,4], im_ms[:,:,1], cloud_mask) 
+        elif spectral_index == 'ndwi':
+            im_plot  = SDS_tools.nd_index(im_ms[:,:,3], im_ms[:,:,1], cloud_mask) 
+        else:
+            im_plot = SDS_preprocess.rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)
+        
+        image_epsg = epsg_dict[list(filter(r.match, filenames))[0]]
+        shapes = SDS_tools.load_shapes_as_ndarrays_2(layers,Site_shps, satname, sitename, settings['shapefile_EPSG'],
+                                           georef, metadata, image_epsg)        
+        x0, y0 = shapes['ocean_seed'][1,:]
+        x1, y1 = shapes['entrance_seed'][1,:]
+        Xmin,Xmax,Ymin,Ymax = SDS_tools.get_bounding_box_minmax(shapes['entrance_bounding_box'])
+        
+        ax=plt.subplot(nrows,2,k+1) 
+        k=k+2
+        ax.axis('off')
+        plt.title(satname + ' ' + Loopimage_o_date + ' '  + spectral_index + ' open') 
+        
+        if spectral_index in ['mndwi', 'ndwi']:
+            plt.imshow(im_plot, cmap='seismic', vmin=-1, vmax=1) 
+            plt.colorbar()
+        else:
+            plt.imshow(im_plot, interpolation=Interpolation_method) 
+        
+        plt.rcParams["axes.grid"] = False
+        plt.grid(None)
+        plt.xlim(Xmin-xaxisadjust , Xmax+xaxisadjust)
+        plt.ylim(Ymax,Ymin) 
+        #plt.plot(x0, y0, 'ro', color='yellow', marker="X")
+        #plt.plot(x1, y1, 'ro', color='yellow', marker="D")
+        
+        #plot the digitized entrance paths on top of images - failing due to mixed up epsgs
+        line = list(XS_o_gdf[XS_o_gdf['date'].str.contains(Loopimage_o_date)].geometry.iloc[0].coords)
+        df = pd.DataFrame(line)
+        df = df.drop(columns=2)      
+        pts_world_interp_reproj = SDS_tools.convert_epsg(df.values, settings['output_epsg'], image_epsg)
+        df2 = pd.DataFrame(pts_world_interp_reproj)
+        df2 = df2.drop(columns=2)  
+        pts_pix_interp = SDS_tools.convert_world2pix(df2.values, georef)
+        ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], linestyle=linestyle[i], color='orange')
+        ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko' , linestyle=linestyle[i] , color='orange')
+        ax.plot(pts_pix_interp[-1,0], pts_pix_interp[-1,1],'ko', color='orange' )
+        plt.text(pts_pix_interp[0,0]+3, pts_pix_interp[0,1]+3,'A',horizontalalignment='left', color='orange' , fontsize=labelsize)
+        plt.text(pts_pix_interp[-1,0]+3, pts_pix_interp[-1,1]+3,'B',horizontalalignment='left', color='orange' , fontsize=labelsize)
+    
+        #plt.xlim(400,500)
+        #plt.ylim( 860,760)
+        #plt.plot([XS_array_pix[0,0], XS_array_pix[len(XS_array_pix)-1,0]], [XS_array_pix[0,1], XS_array_pix[len(XS_array_pix)-1,1]], 'ro-', color='g', lw=1)
+        ax=plt.subplot(nrows,1,4)
+        #Path_mndwi_c_sat_df_1date = Path_mndwi_c_sat_df.filter(regex=Loopimage_o_date)
+        #XS_c_df.filter(regex=satname).filter(regex='_'+spectral_index).filter(regex=Loopimage_c_date).plot(color='lightblue', linestyle=linestyle[i], ax=ax)
+        #XS_o_df.filter(regex=satname).filter(regex='_'+spectral_index).filter(regex=Loopimage_o_date).plot(color='orange',  linestyle=linestyle[i],ax=ax)
+        
+        XS_c_df.filter(regex=satname).filter(regex='_mndwi').filter(regex=Loopimage_c_date).plot(color='lightblue', linestyle=linestyle[i], ax=ax)
+        XS_o_df.filter(regex=satname).filter(regex='_mndwi').filter(regex=Loopimage_o_date).plot(color='orange',  linestyle=linestyle[i],ax=ax)        
+        plt.ylim(-0.9,0.9)
+        plt.title('modified NDWI extracted along each transect shown above') 
+        #plt.legend()
+        plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=0.5) 
+        plt.text(1,0,'A',horizontalalignment='left', color='grey' , fontsize=labelsize)
+        plt.text(len(XS_c_df.filter(regex=satname).filter(regex='_mndwi'))-2,0,'B',horizontalalignment='right', color='grey' , fontsize=labelsize)
+        plt.xlabel('Distance along transect [m]')
+        plt.ylabel('mNDWI [-]')
+        ax.get_legend().remove()
+    
+        if nrows > 4:
+            plot_identifier = 'two_indices'
+            ax=plt.subplot(nrows,1,5)
+            XS_c_df.filter(regex=satname).filter(regex='_ndwi').filter(regex=Loopimage_c_date).plot(color='lightblue', linestyle=linestyle[i], ax=ax)
+            XS_o_df.filter(regex=satname).filter(regex='_ndwi').filter(regex=Loopimage_o_date).plot(color='orange',  linestyle=linestyle[i],ax=ax)
+            plt.ylim(-0.9,0.9)
+            plt.title('NDWI') 
+            #plt.legend()
+            plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=0.5)   
+            plt.xlabel('Distance along transect')
+            plt.ylabel('NDWI')
+            ax.get_legend().remove()
+        
+            if nrows >5:
+                plot_identifier = 'three_indices'
+                ax=plt.subplot(nrows,1,6)
+                XS_c_df.filter(regex=satname).filter(regex='_bathy').filter(regex=Loopimage_c_date).plot(color='lightblue', linestyle=linestyle[i], ax=ax)
+                XS_o_df.filter(regex=satname).filter(regex='_bathy').filter(regex=Loopimage_o_date).plot(color='orange',  linestyle=linestyle[i],ax=ax)
+                plt.ylim(0.8,1.2)
+                plt.title('blue gren ratio') 
+                #plt.legend()
+                plt.axhline(y=1, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=0.5) 
+                plt.xlabel('Distance along transect')
+                plt.ylabel('Blue/Green')
+                ax.get_legend().remove()
+                
+    #save the figure            
+    fig.tight_layout() 
+    fig.savefig(os.path.join(figure_A_out_path, satname + '_Figure_A_' +  plot_identifier + '_' + str(j) + '_'+ spectral_index +'_' + datetime.now().strftime("%d-%m-%Y") +'.png'))     
+    plt.close('all')    
+
+
+#%% Figure B
+"""
+########################################################################
+Figure B - This is currently still in development and might be dropped later
+
+We need a figure where we show the time series of open vs. closed alongside the summary stats obatained for each image
+########################################################################
+"""
+#Set up the plot for the key method figure of the paper
+ 
 
 
 
+#%% Figure C
+"""
+########################################################################
+Figure C - show only 2 images & mNDWI all transects & scatterplots
+The idea here is to show a lot more transects, possibly hundrets as found
+by the least cost path marching algorithm, spatially on one open and one closed
+image as well as in line and scatterplots. I'd like to show absolute mNDWI and 
+slope + the corresponding total cost along each transect in scatterplot 
+This plot is interactive and require a number of user inputs
+########################################################################
+"""
+
+from matplotlib.pyplot import cm
+import numpy as np
+import seaborn
+import skimage.filters as filters
+
+#Set up the plot for the key method figure of the paper
+satname = 'S2'
+filepath = SDS_tools.get_filepath(settings['inputs'],satname)
+filenames = metadata[satname]['filenames']
+epsg_dict = dict(zip(filenames, metadata[satname]['epsg']))     
+
+figure_B_out_path = os.path.join(csv_out_path, 'figure_C')
+if not os.path.exists(figure_B_out_path ):
+        os.makedirs(figure_B_out_path) 
+        
+#plot font size and type
+ALPHA_figs = 1
+font = {'family' : 'sans-serif',
+        'weight' : 'normal',
+        'size'   : 13}
+matplotlib.rc('font', **font)
+
+plt.close('all')      
+
+#plot settings
+fig = plt.figure(figsize=(35,30))   
+nrows = 3 
+xaxisadjust = 0
+Interpolation_method = "bicubic" #"None" #"bicubic")
+labelsize = 26
+spectral_index = 'ndwi'
+k = 1
+linestyle = ['-', '--', '-.']
+linestyletype = 1
+bandwidth = 0.1
+slope_cumulator = 'sum' #max, sum, deltaminmax
 
 
+####################################
+#Plot the closed entrance states
+####################################
+
+# row 1 pos 2   ################################################################################  
+Loopimage_c_date = XS_c_df.filter(regex=satname).filter(regex='_mndwi').columns[0][:-9]
+r = re.compile(".*" + Loopimage_c_date)    
+#combined_df.filter(regex=Gauge[3:]+'_')
+fn = SDS_tools.get_filenames(list(filter(r.match, filenames))[0],filepath, satname)
+print('plotting Figure C')
+im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = SDS_preprocess.preprocess_single(fn, satname, settings['cloud_mask_issue'])
+# rescale image intensity for display purposes  
+
+#if spectral_index == 'mndwi':
+#    im_plot  = SDS_tools.nd_index(im_ms[:,:,4], im_ms[:,:,1], cloud_mask)
+#    plt.colorbar()
+#elif spectral_index == 'ndwi':
+#    im_plot  = SDS_tools.nd_index(im_ms[:,:,3], im_ms[:,:,1], cloud_mask) 
+#    plt.colorbar()
+#else:
+im_plot = SDS_preprocess.rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)  
+    
+image_epsg = epsg_dict[list(filter(r.match, filenames))[0]]
+shapes = SDS_tools.load_shapes_as_ndarrays_2(layers,Site_shps, satname, sitename, settings['shapefile_EPSG'],
+                                   georef, metadata, image_epsg)        
+x0, y0 = shapes['ocean_seed'][1,:]
+x1, y1 = shapes['entrance_seed'][1,:]
+Xmin,Xmax,Ymin,Ymax = SDS_tools.get_bounding_box_minmax(shapes['entrance_bounding_box'])
+
+ax=plt.subplot(nrows,2,1)
+plt.title(satname + ' ' + Loopimage_c_date + ' closed') 
+
+plt.imshow(im_plot, interpolation=Interpolation_method) 
+
+plt.rcParams["axes.grid"] = False
+plt.xlim(Xmin-xaxisadjust , Xmax+xaxisadjust)
+plt.ylim(Ymax,Ymin) 
+#ax.grid(None)
+ax.axis('off')
+
+n=len(XS_c_df.filter(regex=satname).filter(regex='_mndwi').columns)
+color=iter(cm.Blues(np.linspace(0,1,n)))
+for i in range(0,n,1):    
+    #plot the digitized entrance paths on top of images - failing due to mixed up epsgs
+    line = list(XS_c_gdf[XS_c_gdf['date'].str.contains(XS_c_df.filter(regex=satname).filter(regex='_mndwi').columns[i][:-9])].geometry.iloc[0].coords)
+    df = pd.DataFrame(line)
+    df = df.drop(columns=2)      
+    pts_world_interp_reproj = SDS_tools.convert_epsg(df.values, settings['output_epsg'], image_epsg)
+    df2 = pd.DataFrame(pts_world_interp_reproj)
+    df2 = df2.drop(columns=2)  
+    pts_pix_interp = SDS_tools.convert_world2pix(df2.values, georef)
+    c= next(color)
+    ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], linestyle=linestyle[0], color=c)
+    ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko',   color=c)
+    ax.plot(pts_pix_interp[-1,0], pts_pix_interp[-1,1],'ko', color=c)  
+    if i==0:
+        plt.text(pts_pix_interp[0,0]+3, pts_pix_interp[0,1]+3,'A',horizontalalignment='left', color='lightblue' , fontsize=labelsize)
+        plt.text(pts_pix_interp[-1,0]+3, pts_pix_interp[-1,1]+3,'B',horizontalalignment='left', color='lightblue', fontsize=labelsize)
 
 
+####################################
+#Plot the open entrance states
+#################################### 
+        
+# row 1 pos 2   ################################################################################         
+Loopimage_c_date = XS_o_df.filter(regex=satname).filter(regex='_mndwi').columns[0][:-9]
+r = re.compile(".*" + Loopimage_c_date)    
+#combined_df.filter(regex=Gauge[3:]+'_')
+fn = SDS_tools.get_filenames(list(filter(r.match, filenames))[0],filepath, satname)
+#print(fn)
+im_ms, georef, cloud_mask, im_extra, im_QA, im_nodata = SDS_preprocess.preprocess_single(fn, satname, settings['cloud_mask_issue'])
+# rescale image intensity for display purposes
+
+im_plot = SDS_preprocess.rescale_image_intensity(im_ms[:,:,[2,1,0]], cloud_mask, 99.9)  
+    
+image_epsg = epsg_dict[list(filter(r.match, filenames))[0]]
+shapes = SDS_tools.load_shapes_as_ndarrays_2(layers,Site_shps, satname, sitename, settings['shapefile_EPSG'],
+                                   georef, metadata, image_epsg)        
+x0, y0 = shapes['ocean_seed'][1,:]
+x1, y1 = shapes['entrance_seed'][1,:]
+Xmin,Xmax,Ymin,Ymax = SDS_tools.get_bounding_box_minmax(shapes['entrance_bounding_box'])
+
+ax=plt.subplot(nrows,2,2)
+plt.title(satname + ' ' + Loopimage_c_date + ' open') 
+
+plt.imshow(im_plot, interpolation=Interpolation_method) 
+
+plt.rcParams["axes.grid"] = False
+plt.xlim(Xmin-xaxisadjust , Xmax+xaxisadjust)
+plt.ylim(Ymax,Ymin) 
+#ax.grid(None)
+ax.axis('off')
+
+n=len(XS_o_df.filter(regex=satname).filter(regex='_mndwi').columns)
+color=iter(cm.Oranges(np.linspace(0,1,n)))
+for i in range(0,n,1):
+    #plot the digitized entrance paths on top of images - failing due to mixed up epsgs
+    line = list(XS_o_gdf[XS_o_gdf['date'].str.contains(XS_o_df.filter(regex=satname).filter(regex='_mndwi').columns[i][:-9])].geometry.iloc[0].coords)
+    df = pd.DataFrame(line)
+    df = df.drop(columns=2)      
+    pts_world_interp_reproj = SDS_tools.convert_epsg(df.values, settings['output_epsg'], image_epsg)
+    df2 = pd.DataFrame(pts_world_interp_reproj)
+    df2 = df2.drop(columns=2)  
+    pts_pix_interp = SDS_tools.convert_world2pix(df2.values, georef)
+    c= next(color)
+    ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], linestyle=linestyle[0], color=c)
+    ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko',   color=c)
+    ax.plot(pts_pix_interp[-1,0], pts_pix_interp[-1,1],'ko', color=c)  
+    if i==0:
+        plt.text(pts_pix_interp[0,0]+3, pts_pix_interp[0,1]+3,'A',horizontalalignment='left', color='orange' , fontsize=labelsize)
+        plt.text(pts_pix_interp[-1,0]+3, pts_pix_interp[-1,1]+3,'B',horizontalalignment='left', color='orange', fontsize=labelsize)
+        
+
+# row 2 pos 1  ################################################################################          
+#plot the mNDWI transects
+ax=plt.subplot(nrows,3,4)
+XS_c_df.filter(regex=satname).filter(regex='_' + spectral_index).plot(color='lightblue', linestyle=linestyle[linestyletype], ax=ax)
+XS_o_df.filter(regex=satname).filter(regex='_' + spectral_index).plot(color='orange',  linestyle=linestyle[linestyletype],ax=ax)
+plt.ylim(-0.9,0.9)
+#plt.title('spectral_index + ' along transects') 
+#plt.legend()
+plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=0.5) 
+plt.text(1,0,'A',horizontalalignment='left', color='grey' , fontsize=labelsize)
+plt.text(len(XS_c_df.filter(regex=satname).filter(regex='_mndwi'))-2,0,'B',horizontalalignment='right', color='grey' , fontsize=labelsize)
+plt.xlabel('Distance along transects [m]')
+plt.ylabel(spectral_index)
+ax.get_legend().remove()  
 
 
+# row 2 pos 2  ################################################################################   
+#plot the mNDWI sums along the transects over time
+ax=plt.subplot(nrows,3,5)
+
+if slope_cumulator == 'sum':
+    XS_c_sums_df = XS_c_df.filter(regex=satname).filter(regex='_' + spectral_index).sum()
+elif slope_cumulator == 'deltaminmax':
+    XS_c_sums_df = XS_c_df.filter(regex=satname).filter(regex='_' + spectral_index).max() - XS_c_df.filter(regex=satname).filter(regex='_' + spectral_index).min()
+else:
+    XS_c_sums_df = XS_c_df.filter(regex=satname).filter(regex='_' + spectral_index).max()
+    
+newindex = {}
+for index in XS_c_sums_df.index:
+    if spectral_index == 'mndwi':
+        newindex[index]= pd.to_datetime(index[:-9], format = '%Y-%m-%d')
+    if spectral_index == 'ndwi':
+        newindex[index]= pd.to_datetime(index[:-8], format = '%Y-%m-%d')
+XS_c_sums_df.index = newindex.values()
+XS_c_sums_df = pd.DataFrame(XS_c_sums_df)
+XS_c_sums_df.plot(color='lightblue',style='.--',  ax=ax)
+
+if slope_cumulator == 'sum':
+    XS_o_sums_df = XS_o_df.filter(regex=satname).filter(regex='_' + spectral_index).sum()
+elif slope_cumulator == 'deltaminmax':
+    XS_o_sums_df = XS_o_df.filter(regex=satname).filter(regex='_' + spectral_index).max() - XS_o_df.filter(regex=satname).filter(regex='_' + spectral_index).min()
+else:
+    XS_o_sums_df = XS_o_df.filter(regex=satname).filter(regex='_' + spectral_index).max()
+    
+newindex = {}
+for index in XS_o_sums_df.index:
+    if spectral_index == 'mndwi':
+        newindex[index]= pd.to_datetime(index[:-9], format = '%Y-%m-%d')
+    if spectral_index == 'ndwi':
+        newindex[index]= pd.to_datetime(index[:-8], format = '%Y-%m-%d')
+XS_o_sums_df.index = newindex.values()
+XS_o_sums_df = pd.DataFrame(XS_o_sums_df)
+XS_o_sums_df.plot(color='orange', style='.--',ax=ax)
+
+#df = XS_o_sums_df
+#df.reset_index(inplace=True)
+#df.columns = ['time','value']
+#df.plot(kind='scatter',x='time',y='value')
+        
+plt.ylim(XS_o_sums_df.min().min(),XS_c_sums_df.max().max())
+#plt.title('mNDWI along transects') 
+#plt.legend()
+#plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=0.5) 
+#plt.text(1,0,'A',horizontalalignment='left', color='grey' , fontsize=labelsize)
+#plt.text(len(XS_c_df.filter(regex=satname).filter(regex='_mndwi'))-2,0,'B',horizontalalignment='right', color='grey' , fontsize=labelsize)
+#plt.xlabel('Time')
+plt.ylabel(slope_cumulator +' of ' +spectral_index + ' along transects')
+ax.get_legend().remove()  
 
 
-
-
-
-
-
-
-# visualise the mapped shorelines, there are two options:
-# if settings['check_detection'] = True, shows the detection to the user for accept/reject
-# if settings['save_figure'] = True, saves a figure for each mapped shoreline
-if settings['check_detection'] or settings['save_figure']:
-    date = filenames[i][:19]
-    skip_image = SDS_shoreline.show_detection(im_ms, cloud_mask, im_labels, shoreline,
-                                image_epsg, georef, settings, date, satname)
-    # if the user decides to skip the image, continue and do not save the mapped shoreline
-    if skip_image:
-        continue
+# row 2 pos 3  ################################################################################   
+#plot the densities of the sums along each transect
+ax=plt.subplot(nrows,3,6)
+#seaborn.kdeplot(XS_c_df.filter(regex=satname).filter(regex='_mndwi').dropna().iloc[:,0], shade=True,vertical=True, color='orange',bw=bandwidth, lw=2, ax=ax)
+seaborn.kdeplot(XS_o_sums_df.iloc[:,0], shade=True,vertical=True, color='orange',bw=bandwidth, lw=2, ax=ax)
+plt.ylim(XS_o_sums_df.min().min(),XS_c_sums_df.max().max())
+seaborn.kdeplot(XS_c_sums_df.iloc[:,0], shade=True,vertical=True, color='lightblue',bw=bandwidth, lw=2, ax=ax)
+plt.axhline(y=filters.threshold_otsu(pd.DataFrame(XS_o_sums_df.iloc[:,0]).append(pd.DataFrame(XS_c_sums_df.iloc[:,0])).iloc[:,0].values),
+            color='grey', linestyle='--', lw=1, alpha=0.5) 
+#plt.text( xlocation , (np.nanpercentile(TS_1,87)), '13% exceedance', ha='left', va='bottom')
+#plt.axhline(y=np.nanpercentile(TS_1,87), color=color_1, linestyle='solid', lw=width, alpha=1) 
+plt.ylim(XS_o_sums_df.min().min(),XS_c_sums_df.max().max())
+plt.xlabel('Probability density')
+plt.ylabel(slope_cumulator +' of ' +spectral_index + ' along transects')
     
 
+# row 3 pos 1  ################################################################################          
+#plot the mNDWI slope transects
+ax=plt.subplot(nrows,3,7)
+XS_c_df.diff().filter(regex=satname).filter(regex='_' + spectral_index).plot(color='lightblue', linestyle=linestyle[linestyletype], ax=ax)
+XS_o_df.diff().filter(regex=satname).filter(regex='_' + spectral_index).plot(color='orange',  linestyle=linestyle[linestyletype],ax=ax)
+plt.ylim(XS_c_df.diff().min().min(),XS_c_df.diff().max().max())
+#plt.title('Gradient of modified NDWI along transects') 
+#plt.legend()
+plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=0.5) 
+plt.text(1,0,'A',horizontalalignment='left', color='grey' , fontsize=labelsize)
+plt.text(len(XS_c_df.filter(regex=satname).filter(regex='_mndwi'))-2,0,'B',horizontalalignment='right', color='grey' , fontsize=labelsize)
+plt.xlabel('Distance along transects [m]')
+plt.ylabel('Slope of ' + spectral_index)
+ax.get_legend().remove()     
+ 
 
-            
-            
-            
-            
+# row 3 pos 2  ################################################################################      
+#plot the mNDWI sums along the transects over time
+ax=plt.subplot(nrows,3,8)
 
+if slope_cumulator == 'sum':
+    XS_c_sums_df = XS_c_df.filter(regex=satname).filter(regex='_' + spectral_index).diff().abs().sum()
+elif slope_cumulator == 'deltaminmax':
+    XS_c_sums_df = XS_c_df.filter(regex=satname).filter(regex='_' + spectral_index).diff().max() - XS_c_df.filter(regex=satname).filter(regex='_' + spectral_index).diff().min()
+else:
+    XS_c_sums_df = XS_c_df.filter(regex=satname).filter(regex='_' + spectral_index).diff().max()
 
-
-
-
-
-
-
-
-        # there are two options to extract to map the contours:
-        # if there are pixels in the 'sand' class --> use find_wl_contours2 (enhanced)
-        # otherwise use find_wl_contours2 (traditional)
-        try: # use try/except structure for long runs
-            if sum(sum(im_labels[:,:,0])) == 0 :
-                # compute MNDWI image (SWIR-G)
-                im_mndwi = SDS_tools.nd_index(im_ms[:,:,4], im_ms[:,:,1], cloud_mask)
-                # find water contours on MNDWI grayscale image
-                contours_mwi = find_wl_contours1(im_mndwi, cloud_mask, im_ref_buffer)
-            else:
-                # use classification to refine threshold and extract the sand/water interface
-                contours_wi, contours_mwi = find_wl_contours2(im_ms, im_labels,
-                                            cloud_mask, buffer_size_pixels, im_ref_buffer)
-        except:
-            print('Could not map shoreline for this image: ' + filenames[i])
-            continue
-
-        # process water contours into shorelines
-        shoreline = process_shoreline(contours_mwi, georef, image_epsg, settings)
-
-        # visualise the mapped shorelines, there are two options:
-        # if settings['check_detection'] = True, shows the detection to the user for accept/reject
-        # if settings['save_figure'] = True, saves a figure for each mapped shoreline
-        if settings['check_detection'] or settings['save_figure']:
-            date = filenames[i][:19]
-            skip_image = show_detection(im_ms, cloud_mask, im_labels, shoreline,
-                                        image_epsg, georef, settings, date, satname)
-            # if the user decides to skip the image, continue and do not save the mapped shoreline
-            if skip_image:
-                continue
-
-        # append to output variables
-        output_timestamp.append(metadata[satname]['dates'][i])
-        output_shoreline.append(shoreline)
-        output_filename.append(filenames[i])
-        output_cloudcover.append(cloud_cover)
-        output_geoaccuracy.append(metadata[satname]['acc_georef'][i])
-        output_idxkeep.append(i)
-
-    # create dictionnary of output
-    output[satname] = {
-            'dates': output_timestamp,
-            'shorelines': output_shoreline,
-            'filename': output_filename,
-            'cloud_cover': output_cloudcover,
-            'geoaccuracy': output_geoaccuracy,
-            'idx': output_idxkeep
-            }
-    print('')
-
-# Close figure window if still open
-if plt.get_fignums():
-    plt.close()
-
-# change the format to have one list sorted by date with all the shorelines (easier to use)
-output = SDS_tools.merge_output(output)
-
-# save outputput structure as output.pkl
-filepath = os.path.join(filepath_data, sitename)
-with open(os.path.join(filepath, sitename + '_output.pkl'), 'wb') as f:
-    pickle.dump(output, f)
-
-# save output into a gdb.GeoDataFrame
-gdf = SDS_tools.output_to_gdf(output)
-# set projection
-gdf.crs = {'init':'epsg:'+str(settings['output_epsg'])}
-# save as geojson    
-gdf.to_file(os.path.join(filepath, sitename + '_output.geojson'), driver='GeoJSON', encoding='utf-8')
-
-return output
+newindex = {}
+for index in XS_c_sums_df.index:
+    if spectral_index == 'mndwi':
+        newindex[index]= pd.to_datetime(index[:-9], format = '%Y-%m-%d')
+    if spectral_index == 'ndwi':
+        newindex[index]= pd.to_datetime(index[:-8], format = '%Y-%m-%d')
+XS_c_sums_df.index = newindex.values()
+XS_c_sums_df = pd.DataFrame(XS_c_sums_df)
+XS_c_sums_df.plot(color='lightblue',style='.--',  ax=ax)
 
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-##### Original Code Below 
-
-# extract shorelines from all images (also saves output.pkl and shorelines.kml)
-output = SDS_shoreline.extract_shorelines(metadata, settings)
-
-# plot the mapped shorelines
-fig = plt.figure()
-plt.axis('equal')
-plt.xlabel('Eastings')
-plt.ylabel('Northings')
-plt.grid(linestyle=':', color='0.5')
-for i in range(len(output['shorelines'])):
-    sl = output['shorelines'][i]
-    date = output['dates'][i]
-    plt.plot(sl[:,0], sl[:,1], '.', label=date.strftime('%d-%m-%Y'))
-plt.legend()
-mng = plt.get_current_fig_manager()                                         
-mng.window.showMaximized()    
-fig.set_size_inches([15.76,  8.52])
-
-#%% 4. Shoreline analysis
-
-# if you have already mapped the shorelines, load the output.pkl file
-filepath = os.path.join(inputs['filepath'], sitename)
-with open(os.path.join(filepath, sitename + '_output' + '.pkl'), 'rb') as f:
-    output = pickle.load(f) 
-
-# now we have to define cross-shore transects over which to quantify the shoreline changes
-# each transect is defined by two points, its origin and a second point that defines its orientation
-
-# there are 3 options to create the transects:
-# - option 1: draw the shore-normal transects along the beach
-# - option 2: load the transect coordinates from a .kml file
-# - option 3: create the transects manually by providing the coordinates
-
-# option 1: draw origin of transect first and then a second point to define the orientation
-transects = SDS_transects.draw_transects(output, settings)
+if slope_cumulator == 'sum':
+    XS_o_sums_df = XS_o_df.filter(regex=satname).filter(regex='_' + spectral_index).diff().abs().sum() 
+elif slope_cumulator == 'deltaminmax':
+    XS_o_sums_df = XS_o_df.filter(regex=satname).filter(regex='_' + spectral_index).diff().max() - XS_o_df.filter(regex=satname).filter(regex='_' + spectral_index).diff().min()
+else:
+    XS_o_sums_df = XS_o_df.filter(regex=satname).filter(regex='_' + spectral_index).diff().abs().max()
     
-# option 2: load the transects from a .geojson file
-#geojson_file = os.path.join(os.getcwd(), 'examples', 'NARRA_transects.geojson')
-#transects = SDS_tools.transects_from_geojson(geojson_file)
+newindex = {}
+for index in XS_o_sums_df.index:
+    if spectral_index == 'mndwi':
+        newindex[index]= pd.to_datetime(index[:-9], format = '%Y-%m-%d')
+    if spectral_index == 'ndwi':
+        newindex[index]= pd.to_datetime(index[:-8], format = '%Y-%m-%d')
+XS_o_sums_df.index = newindex.values()
+XS_o_sums_df = pd.DataFrame(XS_o_sums_df)
+XS_o_sums_df.plot(color='orange', style='.--', ax=ax)
 
-# option 3: create the transects by manually providing the coordinates of two points 
-#transects = dict([])
-#transects['Transect 1'] = np.array([[342836, 6269215], [343315, 6269071]])
-#transects['Transect 2'] = np.array([[342482, 6268466], [342958, 6268310]])
-#transects['Transect 3'] = np.array([[342185, 6267650], [342685, 6267641]])
-   
-# intersect the transects with the 2D shorelines to obtain time-series of cross-shore distance
-settings['along_dist'] = 25
-cross_distance = SDS_transects.compute_intersection(output, transects, settings) 
 
-# plot the time-series
-from matplotlib import gridspec
-fig = plt.figure()
-gs = gridspec.GridSpec(len(cross_distance),1)
-gs.update(left=0.05, right=0.95, bottom=0.05, top=0.95, hspace=0.05)
-for i,key in enumerate(cross_distance.keys()):
-    if np.all(np.isnan(cross_distance[key])):
-        continue
-    ax = fig.add_subplot(gs[i,0])
-    ax.grid(linestyle=':', color='0.5')
-    ax.set_ylim([-50,50])
-    ax.plot(output['dates'], cross_distance[key]- np.nanmedian(cross_distance[key]), '-^', markersize=6)
-    ax.set_ylabel('distance [m]', fontsize=12)
-    ax.text(0.5,0.95,'Transect ' + key, bbox=dict(boxstyle="square", ec='k',fc='w'), ha='center',
-            va='top', transform=ax.transAxes, fontsize=14)
-mng = plt.get_current_fig_manager()                                         
-mng.window.showMaximized()    
-fig.set_size_inches([15.76,  8.52])
+plt.ylim(XS_o_sums_df.min().min(),XS_c_sums_df.max().max())
+#plt.title('max slope along mNDWI transects') 
+#plt.legend()
+#plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=0.5) 
+#plt.text(1,0,'A',horizontalalignment='left', color='grey' , fontsize=labelsize)
+#plt.text(len(XS_c_df.filter(regex=satname).filter(regex='_mndwi'))-2,0,'B',horizontalalignment='right', color='grey' , fontsize=labelsize)
+#plt.xlabel('Time')
+plt.ylabel(slope_cumulator +' of abs(slope) along ' + spectral_index + ' transects')
+ax.get_legend().remove()   
+
+
+# row 3 pos 3  ################################################################################  
+#plot the densities of the sums along each transect
+ax=plt.subplot(nrows,3,9)
+#seaborn.kdeplot(XS_c_df.filter(regex=satname).filter(regex='_mndwi').dropna().iloc[:,0], shade=True,vertical=True, color='orange',bw=bandwidth, lw=2, ax=ax)
+seaborn.kdeplot(XS_o_sums_df.iloc[:,0], shade=True,vertical=True, color='orange',bw=0.05, legend=False, lw=2, ax=ax)
+plt.ylim(XS_o_sums_df.min().min(),XS_c_sums_df.max().max())
+seaborn.kdeplot(XS_c_sums_df.iloc[:,0], shade=True,vertical=True, color='lightblue',bw=0.05,legend=False, lw=2, ax=ax)
+plt.xlabel('Probability density')
+plt.ylabel(slope_cumulator +' of abs(slope) along ' + spectral_index + ' transects')
+plt.ylim(XS_o_sums_df.min().min(),XS_c_sums_df.max().max())
+plt.axhline(y=filters.threshold_otsu(pd.DataFrame(XS_o_sums_df.iloc[:,0]).append(pd.DataFrame(XS_c_sums_df.iloc[:,0])).iloc[:,0].values),
+            color='grey', linestyle='--', lw=1, alpha=0.5) 
+#plt.text( xlocation , (np.nanpercentile(TS_1,87)), '13% exceedance', ha='left', va='bottom')
+    
+fig.tight_layout()        
+fig.savefig(os.path.join(figure_B_out_path, satname + '_Figure_C_'  + spectral_index +'_' + slope_cumulator + '_based_'+ datetime.now().strftime("%d-%m-%Y") +'.png'))          
+
+"""
+########################################################################
+End of figure C
+########################################################################
+"""      
+        
+
+
+
+
+#%% Step 4: Run validation of automated entrance state detection vs training data and provide user outputs               
+            
+ 
+
+
+        
+
+
+
+
+
+
+
+
+
+
+

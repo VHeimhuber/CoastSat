@@ -6,10 +6,6 @@
 # load modules
 import os
 import numpy as np
-import matplotlib.pyplot as plt
-import pdb
-
-# other modules
 from osgeo import gdal, osr
 import geopandas as gpd
 from shapely import geometry
@@ -17,7 +13,6 @@ import skimage.transform as transform
 from skimage import draw
 import skimage.filters as filters
 from scipy.ndimage.filters import uniform_filter
-import fiona
 
 ###################################################################################################
 # COORDINATES CONVERSION FUNCTIONS
@@ -223,6 +218,39 @@ def image_std(image, radius):
     win_std = win_std[radius:-radius, radius:-radius]
 
     return win_std
+
+
+def bathy_index(im1, im2, cloud_mask):
+    """
+    Computes normalised difference index on 2 images (2D), given a cloud mask (2D)
+    
+    VH WRL 2020
+
+    Arguments:
+    -----------
+        im1, im2: np.ndarray
+            Images (2D) with which to calculate the ND index
+        cloud_mask: np.ndarray
+            2D cloud mask with True where cloud pixels are
+        plot_bool: boolean
+            True if plot is wanted
+        
+    Returns:    -----------
+        im_nd: np.ndarray
+
+            Image (2D) containing the ND index
+    """
+    vec_mask = cloud_mask.reshape(im1.shape[0] * im1.shape[1])
+    vec_nd = np.ones(len(vec_mask)) * np.nan
+    vec1 = im1.reshape(im1.shape[0] * im1.shape[1])
+    vec2 = im2.reshape(im2.shape[0] * im2.shape[1])
+    temp = np.divide(np.log(vec1[~vec_mask]),
+                     np.log(vec2[~vec_mask]))
+    vec_nd[~vec_mask] = temp
+    im_nd = vec_nd.reshape(im1.shape[0], im1.shape[1])
+    
+    return im_nd
+
 
 def mask_raster(fn, mask):
     """
@@ -550,6 +578,7 @@ def polygon2mask(image_shape, polygon):
         vertex_row_coords, vertex_col_coords, image_shape)
     mask = np.zeros(image_shape, dtype=int)
     mask[fill_row_coords, fill_col_coords] = 9999
+    
     return mask
 
 def maskimage_frompolygon(image, polygonndarray):
@@ -567,6 +596,22 @@ def maskimage_frompolygon(image, polygonndarray):
     image_masked[mask != 9999] = np.NAN
     return image_masked
 
+def maskimage_frompolygon_set_value(image, polygonndarray, mask_value):
+    """
+    function that uses an nparray image and an nparray polygon as input and 
+    returns a copy of the image with the pixels outside the polygon masked as np.NAN
+    mask an nparray image with 1 dimension based on a polygon in nparray format
+    """
+    image_shape = (image.shape)
+    #swap x and y coordinates
+    polygonndarray_conv = np.copy(polygonndarray).astype(int)
+    polygonndarray_conv[:,[0, 1]] = polygonndarray[:,[1, 0]]
+    mask = polygon2mask(image_shape, polygonndarray_conv) #create a mask where valid values inside the polygon are 9999
+    image_masked = np.copy(image)
+    image_masked[mask != 9999] = mask_value
+    
+    return image_masked
+
 
 #generate bounding box in pixel coordinates
 def get_bounding_box_minmax(polygonndarray):
@@ -574,69 +619,81 @@ def get_bounding_box_minmax(polygonndarray):
     Xmax = np.max(polygonndarray.astype(int)[:,0])
     Ymin = np.min(polygonndarray.astype(int)[:,1])
     Ymax = np.max(polygonndarray.astype(int)[:,1])
+    
     return Xmin,Xmax, Ymin,Ymax
 
 
 
-def load_shapes_as_ndarrays(satname, sitename, shapefile_EPSG,  georef, metadata):
-    
-    #seed point for region growing
-    shp_seed = os.path.join(os.getcwd(), 'Sites', sitename + '_ocean_seed.shp')    
-    with fiona.open(shp_seed, "r") as shapefile:
-        features = [feature["geometry"] for feature in shapefile]
-    [x0, y0] = features[0]['coordinates'][0],features[0]['coordinates'][1]
-    [x1, y1] = features[1]['coordinates'][0],features[1]['coordinates'][1]
-    seedpoint_array = np.array([[x0, y0], [x1, y1]])
-    
-    #convert input spatial layers to image coordinates
-    #if lat lon use 4326 (WGS 84)
-    image_epsg = metadata[satname]['epsg'][1]
-    seedpoint_array = convert_epsg(seedpoint_array, shapefile_EPSG, image_epsg)
-    seedpoint_array = convert_world2pix(seedpoint_array[:,:-1], georef)
-     
-    #ICOLL entrance area bounding box for limiting spectral variability of scene
-    shp_entrance_bbx = os.path.join(os.getcwd(), 'Sites', sitename + '_entrance_bounding_box.shp')    
-    with fiona.open(shp_entrance_bbx, "r") as shapefile:
-        entrance_bbx = [feature["geometry"] for feature in shapefile]  
-    entrance_bbx = [[list(elem) for elem in entrance_bbx[0]['coordinates'][0]]]
-    entrance_bbx_conv = convert_epsg(entrance_bbx, shapefile_EPSG, image_epsg)
-    entrance_bbx_pix = convert_world2pix(entrance_bbx_conv[0][:,:-1], georef)
-    
-    #ICOLL entrance area that's clearly within the lagoon - it's used as a receiving area for the region grower
-    shp_entrance_receiver = os.path.join(os.getcwd(), 'Sites', sitename + '_entrance_area.shp')    
-    with fiona.open(shp_entrance_receiver, "r") as shapefile:
-        entrance_receiver = [feature["geometry"] for feature in shapefile] 
-    entrance_rec = [[list(elem) for elem in entrance_receiver[0]['coordinates'][0]]]
-    entrance_rec_conv = convert_epsg(entrance_rec, shapefile_EPSG, image_epsg)
-    entrance_rec_pix = convert_world2pix(entrance_rec_conv [0][:,:-1], georef) 
-    
-    #ICOLL entrance area bounding box for limiting spectral variability of scene
-    shp_estuary = os.path.join(os.getcwd(), 'Sites', sitename + '_estuary_area.shp')    
-    with fiona.open(shp_estuary, "r") as shapefile:
-        shp_estuary = [feature["geometry"] for feature in shapefile]  
-    estuary = [[list(elem) for elem in shp_estuary[0]['coordinates'][0]]]
-    estuary = convert_epsg(estuary, shapefile_EPSG, image_epsg)
-    estuary = convert_world2pix(estuary[0][:,:-1], georef)
-    
-    #ICOLL entrance area bounding box for limiting spectral variability of scene
-    shp_WQ = os.path.join(os.getcwd(), 'Sites', sitename + '_WQ_area.shp')    
-    with fiona.open(shp_WQ, "r") as shapefile:
-        shp_WQ = [feature["geometry"] for feature in shapefile]  
-    WQ_pix = [[list(elem) for elem in shp_WQ[0]['coordinates'][0]]]
-    WQ_pix = convert_epsg(WQ_pix, shapefile_EPSG, image_epsg)
-    WQ_pix = convert_world2pix(WQ_pix[0][:,:-1], georef)
-    
-    shapes = { 
-    # general parameters:
-    'seedandreceivingpoint': seedpoint_array,        # threshold on maximum cloud cover
-    'entrance_bbx': entrance_bbx_pix,       # epsg code of spatial reference system desired for the output  
-    'entrance_receiving_area': entrance_rec_pix,
-    'estuary_outline' : estuary, 
-    'water_quality_area': WQ_pix
-    }
-    
-    return shapes
+#def load_shapes_as_ndarrays(satname, sitename, shapefile_EPSG,  georef, metadata):
+#    
+#    #seed point for region growing
+#    shp_seed = os.path.join(os.getcwd(), 'sites', sitename + '_ocean_seed.shp')    
+#    with fiona.open(shp_seed, "r") as shapefile:
+#        features = [feature["geometry"] for feature in shapefile]
+#    [x0, y0] = features[0]['coordinates'][0],features[0]['coordinates'][1]
+#    [x1, y1] = features[1]['coordinates'][0],features[1]['coordinates'][1]
+#    seedpoint_array = np.array([[x0, y0], [x1, y1]])
+#    
+#    #convert input spatial layers to image coordinates
+#    #if lat lon use 4326 (WGS 84)
+#    image_epsg = metadata[satname]['epsg'][1]
+#    seedpoint_array = convert_epsg(seedpoint_array, shapefile_EPSG, image_epsg)
+#    seedpoint_array = convert_world2pix(seedpoint_array[:,:-1], georef)
+#     
+#    #ICOLL entrance area bounding box for limiting spectral variability of scene
+#    shp_entrance_bbx = os.path.join(os.getcwd(), 'Sites', sitename + '_entrance_bounding_box.shp')    
+#    with fiona.open(shp_entrance_bbx, "r") as shapefile:
+#        entrance_bbx = [feature["geometry"] for feature in shapefile]  
+#    entrance_bbx = [[list(elem) for elem in entrance_bbx[0]['coordinates'][0]]]
+#    entrance_bbx_conv = convert_epsg(entrance_bbx, shapefile_EPSG, image_epsg)
+#    entrance_bbx_pix = convert_world2pix(entrance_bbx_conv[0][:,:-1], georef)
+#    
+#    #ICOLL entrance area that's clearly within the lagoon - it's used as a receiving area for the region grower
+#    shp_entrance_receiver = os.path.join(os.getcwd(), 'Sites', sitename + '_entrance_area.shp')    
+#    with fiona.open(shp_entrance_receiver, "r") as shapefile:
+#        entrance_receiver = [feature["geometry"] for feature in shapefile] 
+#    entrance_rec = [[list(elem) for elem in entrance_receiver[0]['coordinates'][0]]]
+#    entrance_rec_conv = convert_epsg(entrance_rec, shapefile_EPSG, image_epsg)
+#    entrance_rec_pix = convert_world2pix(entrance_rec_conv [0][:,:-1], georef) 
+#    
+#    #ICOLL entrance area bounding box for limiting spectral variability of scene
+#    shp_estuary = os.path.join(os.getcwd(), 'Sites', sitename + '_estuary_area.shp')    
+#    with fiona.open(shp_estuary, "r") as shapefile:
+#        shp_estuary = [feature["geometry"] for feature in shapefile]  
+#    estuary = [[list(elem) for elem in shp_estuary[0]['coordinates'][0]]]
+#    estuary = convert_epsg(estuary, shapefile_EPSG, image_epsg)
+#    estuary = convert_world2pix(estuary[0][:,:-1], georef)
+#    
+#    #ICOLL entrance area bounding box for limiting spectral variability of scene
+#    shp_WQ = os.path.join(os.getcwd(), 'Sites', sitename + '_WQ_area.shp')    
+#    with fiona.open(shp_WQ, "r") as shapefile:
+#        shp_WQ = [feature["geometry"] for feature in shapefile]  
+#    WQ_pix = [[list(elem) for elem in shp_WQ[0]['coordinates'][0]]]
+#    WQ_pix = convert_epsg(WQ_pix, shapefile_EPSG, image_epsg)
+#    WQ_pix = convert_world2pix(WQ_pix[0][:,:-1], georef)
+#    
+#    shapes = { 
+#    # general parameters:
+#    'seedandreceivingpoint': seedpoint_array,        # threshold on maximum cloud cover
+#    'entrance_bbx': entrance_bbx_pix,       # epsg code of spatial reference system desired for the output  
+#    'entrance_receiving_area': entrance_rec_pix,
+#    'estuary_outline' : estuary, 
+#    'water_quality_area': WQ_pix
+#    }
+#    
+#    return shapes
 
+def load_shapes_as_ndarrays_2(layers,Site_shps, satname, sitename, shapefile_EPSG,  georef, metadata, image_epsg):
+    shapes = dict.fromkeys(layers)
+    for key in shapes.keys():
+        coords = []
+        for b in Site_shps.loc[(Site_shps.layer==key)].geometry.exterior:
+            coords = np.dstack(b.coords.xy).tolist()
+            coords.append(*coords) 
+        coords = convert_epsg(coords, shapefile_EPSG, image_epsg)
+        coords = convert_world2pix(coords[0][:,:-1], georef)
+        shapes[key] = coords      
+    return shapes
 
 def classify_binary_otsu(im_1d, cloud_mask):
     """
@@ -654,7 +711,11 @@ def classify_binary_otsu(im_1d, cloud_mask):
     im_class[im_1d < t_otsu] = 0
     im_class[im_1d >= t_otsu] = 1
     im_class[im_1d ==np.NAN] = np.NAN
+    
     return im_class, t_otsu
+
+
+
 
 
 
