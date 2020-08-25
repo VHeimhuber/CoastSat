@@ -863,11 +863,6 @@ def create_training_data(metadata, settings):
     csv_out_path = os.path.join(filepath_data, sitename,  'results_' + settings['inputs']['analysis_vrs'])
     if not os.path.exists(csv_out_path):
             os.makedirs(csv_out_path) 
-            
-    #load shapefile that conta0ins specific shapes for each ICOLL site as per readme file
-    Allsites = gpd.read_file(os.path.join(os.getcwd(), 'Sites', 'All_sites9.shp')) #.iloc[:,-4:]
-    Site_shps = Allsites.loc[(Allsites.Sitename==sitename)]
-    layers = Site_shps['layer'].values
 
     # initialise output data structure
     Training={}
@@ -938,8 +933,10 @@ def create_training_data(metadata, settings):
                     continue
                 
                 #load boundary shapefiles for each scene and reproject according to satellite image epsg  
-                shapes = SDS_tools.load_shapes_as_ndarrays_2(layers, Site_shps, satname, sitename, settings['shapefile_EPSG'],
-                                                   georef, metadata, epsg_dict[filenames[i]])
+                shapes = SDS_tools.load_shapes_as_ndarrays_2(settings['inputs']['location_shps']['layer'].values, settings['inputs']['location_shps'], satname, sitename, settings['shapefile_EPSG'],
+                               georef, metadata, epsg_dict[filenames[i]] ) 
+
+                                
                 #get the min and max corner (in pixel coordinates) of the entrance area that will be used for plotting the data for visual inspection
                 Xmin,Xmax,Ymin,Ymax = SDS_tools.get_bounding_box_minmax(shapes['entrance_bounding_box'])      
                 
@@ -1300,7 +1297,7 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
     #plot font size and type
     font = {'family' : 'sans-serif',
             'weight' : 'normal',
-            'size'   : 20}
+            'size'   : settings_entrance['fontsize']}
     matplotlib.rc('font', **font)  
     labelsize = 26
 
@@ -1313,6 +1310,7 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
     csv_out_path = os.path.join(filepath_data, sitename,  'results_' + settings['inputs']['analysis_vrs'], settings_entrance['Experiment_code'])
     if not os.path.exists(csv_out_path):
             os.makedirs(csv_out_path)  
+            
     image_out_path = os.path.join(csv_out_path, 'auto_transects')
     if not os.path.exists(image_out_path):
             os.makedirs(image_out_path) 
@@ -1412,7 +1410,8 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
         #reassign the filepath
         filepath = SDS_tools.get_filepath(settings['inputs'],satname)
         
-        for i in range(len(filenames)):
+        #loop through images and process automatically
+        for i in range(min(len(filenames), settings_entrance['number_of_images'])):
         #for i in range(20):
             
             # read image
@@ -1655,9 +1654,9 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 ax=plt.subplot(4,3,1)
                 plt.imshow(im_RGB, interpolation="bicubic") 
                 plt.rcParams["axes.grid"] = False
-                plt.title(str(dates_dict[filenames[i]].date()))
+                plt.title(satname + ' ' +str(dates_dict[filenames[i]].date()), fontsize=settings_entrance['axlabelsize'])
                 ax.axis('off')
-                plt.xlim(Xmin, Xmax)
+                plt.xlim(Xmin-settings_entrance['img_crop_adjsut'], Xmax+settings_entrance['img_crop_adjsut'])
                 plt.ylim(Ymax,Ymin) 
                 ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], 'r--', color='yellow')
                 ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko', color='yellow')
@@ -1677,14 +1676,14 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 #surrogate_img = im_ndwi
                 #surrogate_img[path == 1] = 1
                 plt.imshow(im_class_b) 
-                orange_patch = mpatches.Patch(color=colours[0,:], label='sand', alpha=0.5)
-                white_patch = mpatches.Patch(color=colours[1,:], label='whitewater', alpha=0.5)
-                blue_patch = mpatches.Patch(color=colours[2,:], label='water', alpha=0.5)
+                orange_patch = mpatches.Patch(color=colours[0,:], label='sand', alpha=0.7)
+                white_patch = mpatches.Patch(color=colours[1,:], label='whitewater', alpha=0.7)
+                blue_patch = mpatches.Patch(color=colours[2,:], label='water', alpha=0.7)
                 ax.legend(handles=[orange_patch,white_patch,blue_patch],
-                           bbox_to_anchor=(1, 0.5), fontsize=10)
-                plt.title('NN classified + path')
+                           bbox_to_anchor=(1, 0.8), fontsize=10)
+                plt.title('NN | sand adj.= ' + str(settings_entrance['ndwi_sand_delta']) + '| whitewash adj.= ' + str(settings_entrance['ndwi_whitewhater_delta']), fontsize=settings_entrance['axlabelsize'])                      
                 ax.axis('off')
-                plt.xlim(Xmin, Xmax)
+                plt.xlim(Xmin-settings_entrance['img_crop_adjsut'], Xmax+settings_entrance['img_crop_adjsut'])
                 plt.ylim(Ymax,Ymin)
                 plt.text(pts_pix_interp[0,0]+1, pts_pix_interp[0,1]+1,'A',horizontalalignment='left', color='yellow' , fontsize=16)
                 plt.text(pts_pix_interp[-1,0]+1, pts_pix_interp[-1,1]+1,'B',horizontalalignment='left', color='yellow', fontsize=16)
@@ -1697,8 +1696,8 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                     seaborn.kdeplot(tide_fes, shade=True,vertical=False, color='blue',bw=settings_entrance['hist_bw'],legend=False, lw=2, ax=ax)
                     seaborn.kdeplot(sat_tides_df['tide_level'], shade=True,vertical=False, color='lightblue',bw=settings_entrance['hist_bw'], legend=False, lw=2, ax=ax)
                     plt.xlim(-1,1)
-                    plt.ylabel('Probability density')
-                    plt.xlabel('Tides over full period (darkblue) and during images only (lightblue)')
+                    plt.ylabel('Probability density', fontsize=settings_entrance['axlabelsize'])
+                    plt.xlabel('Tides over full period (darkblue) and during images only (lightblue)', fontsize=settings_entrance['axlabelsize'])
                     plt.axvline(x=sat_tides_df['tide_level'][i], color='red', linestyle='dotted', lw=2, alpha=0.9) 
                     #plt.text(sat_tides_df['tide_level'][i] , 0.5 ,  'tide @image', rotation=90 , ha='right', va='bottom', alpha=settings_entrance['vhline_transparancy'])                                   
 #                    t = np.array([_.timestamp() for _ in dates_sat]).astype('float64')
@@ -1717,18 +1716,18 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                     blue_patch = mpatches.Patch(color=colours[2,:], label='water', alpha=0.5)
                     ax.legend(handles=[orange_patch,white_patch,blue_patch],
                                bbox_to_anchor=(1, 0.5), fontsize=10)
-                    plt.title('NN classified')
+                    plt.title('NN classified', fontsize=settings_entrance['axlabelsize'])
                     ax.axis('off')
-                    plt.xlim(Xmin, Xmax)
+                    plt.xlim(Xmin-settings_entrance['img_crop_adjsut'], Xmax+settings_entrance['img_crop_adjsut'])
                     plt.ylim(Ymax,Ymin)
                 
                 ax=plt.subplot(4,3,4) 
                 plt.imshow(im_mndwi, cmap='seismic', vmin=-1, vmax=1) 
                 ax.axis('off')
                 plt.rcParams["axes.grid"] = False
-                plt.title('modified NDWI')
+                plt.title('modified NDWI', fontsize=settings_entrance['axlabelsize'])
                 #plt.colorbar()
-                plt.xlim(Xmin, Xmax)
+                plt.xlim(Xmin-settings_entrance['img_crop_adjsut'], Xmax+settings_entrance['img_crop_adjsut'])
                 plt.ylim(Ymax,Ymin) 
                 ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], 'r--', color='yellow')
                 ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko', color='yellow')
@@ -1744,10 +1743,10 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 ax=plt.subplot(4,3,5) 
                 plt.imshow(im_ndwi, cmap='seismic', vmin=-1, vmax=1) 
                 ax.axis('off')
-                plt.title('NDWI')
+                plt.title('NDWI', fontsize=settings_entrance['axlabelsize'])
                 #plt.colorbar()
                 plt.rcParams["axes.grid"] = False
-                plt.xlim(Xmin, Xmax)
+                plt.xlim(Xmin-settings_entrance['img_crop_adjsut'], Xmax+settings_entrance['img_crop_adjsut'])
                 plt.ylim(Ymax,Ymin) 
                 ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], 'r--', color='yellow')
                 ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko', color='yellow')
@@ -1764,23 +1763,23 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 if settings_entrance['tide_bool']:               
                     # plot tide time-series
                     #fig, ax = plt.subplots(1,1,figsize=(12,3), tight_layout=True)
-                    ax.set_title('Tide level at img aquisition = ' + str(np.round(sat_tides_df['tide_level'][i],2)) +  ' [m aMSL]')
+                    ax.set_title('Tide level at img aquisition = ' + str(np.round(sat_tides_df['tide_level'][i],2)) +  ' [m aMSL]', fontsize=settings_entrance['axlabelsize'])
                     ax.grid(which='major', linestyle=':', color='0.5')
                     ax.plot(dates_fes, tide_fes, '-', color='0.6')
                     ax.plot(dates_sat, tide_sat, '-o', color='k', ms=4, mfc='w',lw=1)
                     plt.axhline(y=sat_tides_df['tide_level'][i], color='red', linestyle='dotted', lw=2, alpha=0.9) 
                     ax.plot(sat_tides_df.index[i], sat_tides_df['tide_level'][i], '-o', color='red', ms=12, mfc='w',lw=7)
-                    ax.set_ylabel('tide level [m]')
+                    ax.set_ylabel('tide level [m]', fontsize=settings_entrance['axlabelsize'])
                     ax.set_ylim(SDS_slope.get_min_max(tide_fes))
                     #plt.text(sat_tides_df['tide_level'][i] , 0.5 ,  'tide @image', rotation=90 , ha='right', va='bottom', alpha=settings_entrance['vhline_transparancy'])     
                     
                 else:
                     plt.imshow(im_bathy_sdb, cmap='seismic', vmin=0.9, vmax=1.1) 
                     ax.axis('off')
-                    plt.title('blue/green')
+                    plt.title('blue/green', fontsize=settings_entrance['axlabelsize'])
                     #plt.colorbar()
                     plt.rcParams["axes.grid"] = False
-                    plt.xlim(Xmin, Xmax)
+                    plt.xlim(Xmin-settings_entrance['img_crop_adjsut'], Xmax+settings_entrance['img_crop_adjsut'])
                     plt.ylim(Ymax,Ymin) 
                     ax.plot(pts_pix_interp[:,0], pts_pix_interp[:,1], 'r--', color='yellow')
                     ax.plot(pts_pix_interp[0,0], pts_pix_interp[0,1],'ko', color='yellow')
@@ -1798,9 +1797,9 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 #plt.xlim(int_water_df.filter(regex='_mndwi').min(),int_sand_df.filter(regex='_mndwi').max())
                 plt.xlim(-1,1)
                 seaborn.kdeplot(int_sand_df.filter(regex='_mndwi').iloc[:,0], shade=True,vertical=False, color='orange',bw=settings_entrance['hist_bw'],legend=False, lw=2, ax=ax)
-                plt.ylabel('Probability density')
-                plt.xlabel('mNDWI over sand (orange) and water (blue) classes')
-                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10:
+                plt.ylabel('Probability density', fontsize=settings_entrance['axlabelsize'])
+                plt.xlabel('mNDWI over sand (orange) and water (blue) classes', fontsize=settings_entrance['axlabelsize'])
+                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10 and settings_entrance['plot percentiles']:
                     img_mndwi_otsu = filters.threshold_otsu(pd.DataFrame(int_water_df.filter(regex='_mndwi').iloc[:,0]).append(pd.DataFrame(int_sand_df.filter(regex='_mndwi').iloc[:,0])).iloc[:,0].values)    
                     img_mndwi_perc = np.nanpercentile(int_sand_df.filter(regex='_mndwi').iloc[:,0].values, settings_entrance['sand_percentile'] )
                     img_mndwi_perc10 = np.nanpercentile(int_sand_df.filter(regex='_mndwi').iloc[:,0].values, 10 )
@@ -1822,7 +1821,7 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 plt.ylim(-0.9,0.9)
                 #plt.title('modified NDWI along transect') 
                 #plt.legend()
-                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10:
+                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10 and settings_entrance['plot percentiles']:
                     plt.axhline(y=img_mndwi_perc, color='orangered', linestyle='dotted', lw=1, alpha=settings_entrance['vhline_transparancy']) 
                     plt.axhline(y=img_mndwi_perc10, color='red', linestyle=linestyle[0], lw=1, alpha=settings_entrance['vhline_transparancy']) 
                     plt.axhline(y=img_mndwi_perc20, color='red', linestyle=linestyle[1], lw=1, alpha=settings_entrance['vhline_transparancy']) 
@@ -1831,8 +1830,8 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=settings_entrance['vhline_transparancy']) 
                 plt.text(1,0,'A',horizontalalignment='left', color='grey' , fontsize=labelsize)
                 plt.text(len(z_mndwi)-2,0,'B',horizontalalignment='right', color='grey' , fontsize=labelsize)
-                plt.xlabel('Distance along transect [m]')
-                plt.ylabel('mNDWI [-]')
+                plt.xlabel('Distance along transect [m]', fontsize=settings_entrance['axlabelsize'])
+                plt.ylabel('mNDWI [-]', fontsize=settings_entrance['axlabelsize'])
                 ax.get_legend().remove()
                 
                 ax=plt.subplot(4,3,8)
@@ -1840,23 +1839,23 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 plt.ylim(-0.9,0.9)
                 #plt.title('modified NDWI along transect') 
                 #plt.legend()
-                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10:    
+                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10 and settings_entrance['plot percentiles']:    
                     plt.axhline(y=img_mndwi_perc, color='orangered', linestyle='dotted', lw=1, alpha=settings_entrance['vhline_transparancy']) 
                     plt.axhline(y=img_mndwi_otsu, color='limegreen', linestyle='--', lw=1, alpha=settings_entrance['vhline_transparancy']) 
                 plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=settings_entrance['vhline_transparancy']) 
                 plt.text(1,0,'C',horizontalalignment='left', color='grey' , fontsize=labelsize)
                 plt.text(len(z_mndwi_B)-2,0,'D',horizontalalignment='right', color='grey' , fontsize=labelsize)
-                plt.xlabel('Distance along transect [m]')
-                plt.ylabel('mNDWI [-]')
+                plt.xlabel('Distance along transect [m]', fontsize=settings_entrance['axlabelsize'])
+                plt.ylabel('mNDWI [-]', fontsize=settings_entrance['axlabelsize'])
                 ax.get_legend().remove()            
                 
                 ax=plt.subplot(4,3,12)
                 seaborn.kdeplot(int_water_df.filter(regex='_ndwi').iloc[:,0], shade=True,vertical=False, color='lightblue',bw=settings_entrance['hist_bw'], legend=False, lw=2, ax=ax)
                 plt.xlim(-1,1)
                 seaborn.kdeplot(int_sand_df.filter(regex='_ndwi').iloc[:,0], shade=True,vertical=False, color='orange',bw=settings_entrance['hist_bw'],legend=False, lw=2, ax=ax)
-                plt.ylabel('Probability density')
-                plt.xlabel('NDWI over sand (orange) and water (blue) classes')
-                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10:
+                plt.ylabel('Probability density', fontsize=settings_entrance['axlabelsize'])
+                plt.xlabel('NDWI over sand (orange) and water (blue) classes', fontsize=settings_entrance['axlabelsize'])
+                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10 and settings_entrance['plot percentiles']:
                     img_ndwi_otsu = filters.threshold_otsu(pd.DataFrame(int_water_df.filter(regex='_ndwi').iloc[:,0]).append(pd.DataFrame(int_sand_df.filter(regex='_ndwi').iloc[:,0])).iloc[:,0].values)
                     img_ndwi_perc = np.nanpercentile(int_sand_df.filter(regex='_ndwi').iloc[:,0].values, settings_entrance['sand_percentile'])
                     img_ndwi_perc10 = np.nanpercentile(int_sand_df.filter(regex='_ndwi').iloc[:,0].values, 10 )
@@ -1878,7 +1877,7 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 pd.DataFrame(z_ndwi_adj).plot(color='blue', linestyle='--', ax=ax) 
                 plt.ylim(-0.9,0.9)
                 plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=settings_entrance['vhline_transparancy']) 
-                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10:   
+                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10 and settings_entrance['plot percentiles']:   
                     plt.axhline(y=img_ndwi_perc, color='orangered', linestyle='dotted', lw=1, alpha=settings_entrance['vhline_transparancy']) 
                     plt.axhline(y=img_ndwi_perc10, color='red', linestyle=linestyle[0], lw=1, alpha=settings_entrance['vhline_transparancy']) 
                     plt.axhline(y=img_ndwi_perc20, color='red', linestyle=linestyle[1], lw=1, alpha=settings_entrance['vhline_transparancy']) 
@@ -1886,8 +1885,8 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                     plt.axhline(y=img_ndwi_otsu, color='limegreen', linestyle='--', lw=1, alpha=settings_entrance['vhline_transparancy']) 
                 plt.text(1,0,'A',horizontalalignment='left', color='grey' , fontsize=labelsize)
                 plt.text(len(z_mndwi)-2,0,'B',horizontalalignment='right', color='grey' , fontsize=labelsize)
-                plt.xlabel('Distance along transect [m]')
-                plt.ylabel('NDWI [-]')
+                plt.xlabel('Distance along transect [m]', fontsize=settings_entrance['axlabelsize'])
+                plt.ylabel('NDWI [-]', fontsize=settings_entrance['axlabelsize'])
                 ax.get_legend().remove()
                 
                 ax=plt.subplot(4,3,11)
@@ -1895,17 +1894,18 @@ def automated_entrance_paths(metadata, settings, settings_entrance):
                 #pd.DataFrame(z_ndwi_B_adj).plot(color='blue', linestyle='--', ax=ax) 
                 plt.ylim(-0.9,0.9)
                 plt.axhline(y=0, xmin=-1, xmax=1, color='grey', linestyle='--', lw=1, alpha=settings_entrance['vhline_transparancy']) 
-                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10: 
+                if len(int_sand_df.filter(regex='_ndwi').iloc[:,0].values) > 10 and settings_entrance['plot percentiles']: 
                     plt.axhline(y=img_ndwi_perc, color='orangered', linestyle='dotted', lw=1, alpha=settings_entrance['vhline_transparancy']) 
                     plt.axhline(y=img_ndwi_otsu, color='limegreen', linestyle='--', lw=1, alpha=settings_entrance['vhline_transparancy']) 
                 plt.text(1,0,'C',horizontalalignment='left', color='grey' , fontsize=labelsize)
                 plt.text(len(z_mndwi_B)-2,0,'D',horizontalalignment='right', color='grey' , fontsize=labelsize)
-                plt.xlabel('Distance along transect [m]')
-                plt.ylabel('NDWI [-]')
+                plt.xlabel('Distance along transect [m]', fontsize=settings_entrance['axlabelsize'])
+                plt.ylabel('NDWI [-]', fontsize=settings_entrance['axlabelsize'])
                 ax.get_legend().remove()
      
                 fig.tight_layout() 
-                fig.savefig(image_out_path + '/' + filenames[i][:-4]  + '_' + settings_entrance['path_index'] +'_based.png') 
+                fig.savefig(image_out_path + '/' + filenames[i][:-4]  + '_' + settings_entrance['path_index'] +'_based_' +
+                            'sandadj_ ' + str(settings_entrance['ndwi_sand_delta']) + '_wwadj_ ' + str(settings_entrance['ndwi_whitewhater_delta']) + '.png') 
                 plt.close('all') 
   
     #gdf_all.crs = {'init':'epsg:'+str(image_epsg)} # looks like mistake. geoms as input to the dataframe should already have the output epsg. 
@@ -2100,3 +2100,77 @@ def extract_shorelines(metadata, settings):
     gdf.to_file(os.path.join(filepath, sitename + '_output.geojson'), driver='GeoJSON', encoding='utf-8')
 
     return output
+
+
+
+#tide handling
+       
+# load lat-lon grid from the tide model - this is Kilian's update way of finding the nearest grid cell with tide data in it
+data = Dataset(os.path.join(filepath, 'ocean_tide', 'm2' + '.nc'))
+lats = np.array(data.variables['lat'])
+lons = np.array(data.variables['lon'])
+amplitude = np.array(data.variables['amplitude'])
+no_data_value = data.variables['amplitude']._FillValue
+mask = amplitude == no_data_value
+amplitude[mask] = np.nan
+grid_coords = np.stack([lons[np.where(~mask)[1]],lats[np.where(~mask)[0]]],axis=1)
+ 
+# find closest point on global grid (from FES2014)
+centroid = [...., ....]
+idx_closest = np.argmin(np.linalg.norm(centroid-grid_coords, axis=1))
+centroid_gridded = grid_coords[idx_closest,:]
+# get tides
+tides = SDS_slope.compute_tide_dates(centroid_gridded, output['dates'], ocean_tide, load_tide)
+
+
+#TH pyfes functions adopted from KV but with pandas df functionality
+import pyfes
+import geopandas as gpd
+import pandas as pd
+import numpy as np
+
+def compute_tide_dates(Tidelatlon,dates):
+
+    config_ocean_extrap = r"H:/Downloads/fes-2.9.1-Source/data/fes2014/ocean_tide.ini"
+    ocean_tide = pyfes.Handler("ocean", "io", config_ocean_extrap)
+    config_load = r"H:/Downloads/fes-2.9.1-Source/data/fes2014/load_tide.ini"
+    load_tide = pyfes.Handler("radial", "io", config_load)
+    'compute time-series of water level for a location and dates (using a dates vector)'
+    dates_np = np.empty((len(dates),), dtype='datetime64[us]')
+    for i,date in enumerate(dates):
+        dates_np[i] = date #datetime(date.year,date.month,date.day,date.hour,date.minute,date.second) #if dates is already datetime64 format - otherwise use the long version here
+    lons = Tidelatlon[0]*np.ones(len(dates))
+    lats = Tidelatlon[1]*np.ones(len(dates))
+    # compute heights for ocean tide and loadings
+    ocean_short, ocean_long, min_points = ocean_tide.calculate(lons, lats, dates_np)
+    load_short, load_long, min_points = load_tide.calculate(lons, lats, dates_np)
+    # sum up all components and convert from cm to m
+    tide_level = (ocean_short + ocean_long + load_short + load_long)/100
+    
+    return tide_level
+
+
+#load MHL gauge shapefile to store the results of the statistics
+#Input_locations = gpd.read_file('C:/Users/z5025317/OneDrive - UNSW/WRL_Postdoc_Manual_Backup/WRL_Postdoc/Projects/Mahmood_restoration_paper/02_Analysis/GIS/Shapefiles/Selected_sites_for_tide_extraction.shp')
+Input_locations = gpd.read_file('J:/Project/wrl2018064 Fisheries RAP/04_Working/05_Modelling/RMA/HEMIP/Global_Data/MHL_Gauge_Data/Analysis/Location_for_tide_model_extraction/MHL_gauges_WGS84.shp')
+Input_locations = Input_locations.loc[Input_locations['River'] == 'Open_ocean']
+Input_locations['Station Na'].values[0]
+#Input_locations = pd.DataFrame(Input_locations)
+
+Dates = pd.date_range('2017-01-01', periods=105100, freq='5min')
+
+Tides_df = pd.DataFrame(list(range(len(Dates))), Dates)
+for i in range(0,len(Input_locations),1):
+    #i=10
+    # Find nearest element in RMA mesh
+    #Latlon = [Input_locations['Longitude'][i],Input_locations['Latitude'][i]]
+    Latlon = np.dstack(Input_locations.iloc[i].geometry.coords.xy)[0][0]
+    #Tides_df[Input_locations['Site name'][i]] = compute_tide_dates(Latlon, Dates)
+    Tides_df[Input_locations['Station Na'].values[i]] = compute_tide_dates(Latlon, Dates)
+
+Tides_df_dminmax = Tides_df.resample('D').max() - Tides_df.resample('D').min()
+Tides_df_tidalrange = pd.DataFrame(Tides_df_dminmax.mean())  #.transpose()
+#Tides_df_tidalrange.to_csv('C:/Users/z5025317/OneDrive - UNSW/WRL_Postdoc_Manual_Backup/WRL_Postdoc/Projects/Mahmood_restoration_paper/02_Analysis/GIS/Selected_sites_tidal_ranges2.csv')
+Tides_df_tidalrange.to_csv('J:/Project/wrl2018064 Fisheries RAP/04_Working/05_Modelling/RMA/HEMIP/Global_Data/MHL_Gauge_Data/Analysis/Lication_for_tide_model_extraction/tidal_ranges2.csv')
+Tides_df.to_csv('J:/Project/wrl2018064 Fisheries RAP/04_Working/05_Modelling/RMA/HEMIP/Global_Data/MHL_Gauge_Data/Analysis/Lication_for_tide_model_extraction/Tides_time_series2.csv')
+#df[df['model'].str.match('Mac')]
